@@ -40,6 +40,7 @@ mod parser {
 
     use either::Either;
 
+    use nom::Err;
     use nom::ErrorKind;
     use nom::IResult;
     use nom::alpha;
@@ -48,6 +49,7 @@ mod parser {
     use nom::digit;
     use nom::eol;
     use nom::is_digit;
+    use nom::multispace;
     use nom::non_empty;
     use nom::not_line_ending;
     use nom::whitespace::sp;
@@ -179,8 +181,38 @@ mod parser {
     }
 
     pub fn parse(mif: &[u8]) {
-        let (unparsed, miftree) = fullmiffile(mif).unwrap();
-        println!("{:?}\n\n\n{:?}", miftree, str::from_utf8(unparsed).unwrap());
+        match fullmiffile(mif) {
+            IResult::Done(unparsed, miftree) => {
+                println!("DONE: {:?}\n\n\nunparsed:{:?}", miftree, str::from_utf8(unparsed).unwrap());
+            },
+            IResult::Error(e) => {
+                println!("ERROR:\n");
+                let mut next = e;
+                loop {
+                    next = match next {
+                        Err::Code(e) => {
+                            println!("CODE: {:?}\n", e);
+                            break
+                        },
+                        Err::Node(e, next) => {
+                            println!("NODE: {:?}\n", e);
+                            *next
+                        },
+                        Err::Position(e, p) => {
+                            println!("POSITION: {:?} {:?}\n", e, &str::from_utf8(p).unwrap()[..100]);
+                            break
+                        },
+                        Err::NodePosition(e, p, next) => {
+                            println!("NODEPOSITION: {:?} {:?}\n", e, &str::from_utf8(p).unwrap()[..100]);
+                            *next
+                        },
+                    }
+                }
+            },
+            IResult::Incomplete(needed) => {
+                println!("NEEDED: {:?}", needed)
+            },
+        }
     }
 
     fn to_s(b: Vec<u8>) -> String {
@@ -228,7 +260,7 @@ mod parser {
     //);
 
     fn fail<I, O>(_: I) -> IResult<I, O> {
-        IResult::Error(error_code!(ErrorKind::Custom(0)))
+        IResult::Error(error_code!(ErrorKind::Custom(8965)))
     }
 
     named!(mif_parse_decimal<f64>,
@@ -390,56 +422,89 @@ mod parser {
         call!(fail)
     );
 
+    named!(maybe_spaces_and_comments<&[u8],&[u8]>,
+        recognize!(fold_many1!(
+            alt_complete!(
+                do_parse!(
+                    tag!(b"#") >> not_line_ending >> eol >>
+                    (&[][..])
+                )
+              | sp // Returns success even when nothing consumed
+            ),
+            (), |_acc: (), _item| ()
+        ))
+    );
     named!(spaces_and_comments<&[u8],&[u8]>,
-        recognize!(
-            fold_many1!(
-                alt_complete!(
-                    do_parse!(
-                        tag!(b"#") >> not_line_ending >> eol >>
-                        (&[][..])
+        recognize!(do_parse!(
+            multispace >>
+            maybe_spaces_and_comments >>
+            (())
+        ))
+    );
+    macro_rules! __st_check (
+        ($name:ident) => (
+            interpolate_idents! {
+                named!([check_ $name]<()>,
+                    peek!(
+                        do_parse!(
+                            tag!(b"<") >>
+                            maybe_spaces_and_comments >>
+                            tag!(stringify!($name)) >>
+                            spaces_and_comments >>
+                            (())
+                        )
                     )
-                  | sp // Returns success even when nothing consumed
-                ),
-                (), |_acc: (), _item| ()
-            )
+                );
+            }
         )
+    );
+    macro_rules! __st_parse (
+        ($name:ident, ($( $parsepart:tt )*)) => (
+            interpolate_idents! {
+                named!([statement_ $name]<MIFTree>,
+                    delimited!(
+                        do_parse!(
+                            tag!(b"<") >>
+                            maybe_spaces_and_comments >>
+                            tag!(stringify!($name)) >>
+                            spaces_and_comments >>
+                            (())
+                        ),
+                        // TODO: sep intersperses before and after, as well
+                        // as in-between. We just want in-between, so we have
+                        // to use maybe_ for now. Though I'm not sure how using
+                        // non-maybe_ would work for sub-trees - perhaps they
+                        // don't need spaces between them
+                        sep!(maybe_spaces_and_comments, do_parse!(
+                            $( $parsepart )*
+                        )),
+                        tag!(b">")
+                    )
+                );
+            }
+        );
     );
     macro_rules! st (
         // Empty
         ($name:ident, (), ()) => (
-            interpolate_idents! {
-                named!([statement_ $name]<MIFTree>,
-                    sep!(
-                        spaces_and_comments,
-                        delimited!(
-                            tag!(b"<"),
-                            do_parse!(
-                                tag!(stringify!($name)) >> (MIFTree::$name)
-                            ),
-                            tag!(b">")
-                        )
-                    )
-                );
-            }
+            __st_check!($name);
+            __st_parse!($name, ((MIFTree::$name)));
         );
         ($name:ident, ($( $part:tt )*), ($( $part2:tt )*)) => (
-            interpolate_idents! {
-                named!([statement_ $name]<MIFTree>,
-                    sep!(
-                        spaces_and_comments,
-                        delimited!(
-                            tag!(b"<"),
-                            do_parse!(
-                                tag!(stringify!($name)) >>
-                                $( $part )* >>
-                                (MIFTree::$name($($part2)*))
-                            ),
-                            tag!(b">")
-                        )
-                    )
-                );
-            }
+            __st_check!($name);
+            __st_parse!($name, ($( $part )* >> (MIFTree::$name($( $part2 )*))));
         );
+    );
+    macro_rules! stparse (
+        ($i:expr, $name:ident) => (
+            interpolate_idents! {
+                do_parse!($i,
+                    [check_ $name] >>
+                    x: return_error!(ErrorKind::Custom(589), [statement_ $name]) >>
+                    (x)
+                )
+            }
+        )
     );
 
     fn isfloatchr(b: u8) -> bool { b == b'.' || (b >= b'0' && b <= b'9') }
@@ -447,20 +512,20 @@ mod parser {
     st!(Units, (unit: mif_parse_Uunit), (unit));
     st!(CharUnits, (charunit: mif_parse_charunit), (charunit));
 
-    st!(ColorCatalog, (colors: many0!(statement_Color)), (colors));
+    st!(ColorCatalog, (colors: many0!(stparse!(Color))), (colors));
     st!(Color,
         (props: many0!(alt_complete!(
-            statement_ColorTag
-          | statement_ColorCyan
-          | statement_ColorMagenta
-          | statement_ColorYellow
-          | statement_ColorBlack
-          | statement_ColorLibraryFamilyName
-          | statement_ColorLibraryInkName
-          | statement_ColorAttribute
-          | statement_ColorTint
-          | statement_ColorTintBaseColor
-          | statement_ColorOverprint
+            stparse!(ColorTag)
+          | stparse!(ColorCyan)
+          | stparse!(ColorMagenta)
+          | stparse!(ColorYellow)
+          | stparse!(ColorBlack)
+          | stparse!(ColorLibraryFamilyName)
+          | stparse!(ColorLibraryInkName)
+          | stparse!(ColorAttribute)
+          | stparse!(ColorTint)
+          | stparse!(ColorTintBaseColor)
+          | stparse!(ColorOverprint)
         ))),
         (props)
     );
@@ -476,15 +541,15 @@ mod parser {
     st!(ColorTintBaseColor, (s: data_string), (s));
     st!(ColorOverprint, (b: data_boolean), (b));
 
-    st!(ConditionCatalog, (conds: many0!(statement_Condition)), (conds));
+    st!(ConditionCatalog, (conds: many0!(stparse!(Condition))), (conds));
     st!(Condition,
         (props: many0!(alt_complete!(
-            statement_CTag
-          | statement_CState
-          | statement_CStyle
-          | statement_CColor
-          | statement_CSeparation
-          | statement_CBackgroundColor
+            stparse!(CTag)
+          | stparse!(CState)
+          | stparse!(CStyle)
+          | stparse!(CColor)
+          | stparse!(CSeparation)
+          | stparse!(CBackgroundColor)
         ))),
         (props)
     );
@@ -495,13 +560,13 @@ mod parser {
     st!(CSeparation, (sep: data_integer), (sep));
     st!(CBackgroundColor, (tag: data_tagstring), (tag));
 
-    st!(BoolCondCatalog, (conds: many0!(statement_BoolCond)), (conds));
+    st!(BoolCondCatalog, (conds: many0!(stparse!(BoolCond))), (conds));
     st!(BoolCond,
         (props: many0!(alt_complete!(
-            statement_BoolCondTag
-          | statement_BoolCondExprName
-          | statement_BoolCondExpr
-          | statement_BoolCondState
+            stparse!(BoolCondTag)
+          | stparse!(BoolCondExprName)
+          | stparse!(BoolCondExpr)
+          | stparse!(BoolCondState)
         ))),
         (props)
     );
@@ -512,23 +577,23 @@ mod parser {
     // TODO: validate either Active or Inactive
     st!(BoolCondState, (state: data_string), (state));
 
-    st!(DefAttrValuesCatalog, (attrvals: many0!(statement_DefAttrValues)), (attrvals));
+    st!(DefAttrValuesCatalog, (attrvals: many0!(stparse!(DefAttrValues))), (attrvals));
     st!(DefAttrValues,
         (attrvalues: many0!(alt_complete!(
-            statement_AttributeTag
-          | statement_AttributeValue
+            stparse!(AttributeTag)
+          | stparse!(AttributeValue)
         ))),
         (attrvalues)
     );
     st!(AttributeTag, (tag: data_string), (tag));
     st!(AttributeValue, (value: data_string), (value));
 
-    st!(AttrCondExprCatalog, (attrvals: many0!(statement_AttrCondExpr)), (attrvals));
+    st!(AttrCondExprCatalog, (attrvals: many0!(stparse!(AttrCondExpr))), (attrvals));
     st!(AttrCondExpr,
         (attrvalues: many0!(alt_complete!(
-            statement_AttrCondExprTag
-          | statement_AttrCondExprStr
-          | statement_AttrCondState
+            stparse!(AttrCondExprTag)
+          | stparse!(AttrCondExprStr)
+          | stparse!(AttrCondState)
         ))),
         (attrvalues)
     );
@@ -538,21 +603,21 @@ mod parser {
     st!(AttrCondState, (state: data_string), (state));
 
     // MIFNOTE: this is documented as 'Dictionary', which seems wrong?
-    st!(DictionaryPreferences, (dil: statement_DiLanguages), (Box::new(dil)));
+    st!(DictionaryPreferences, (dil: stparse!(DiLanguages)), (Box::new(dil)));
     // TODO: each service follows a lang
     st!(DiLanguages,
         (langs: many0!(alt_complete!(
-            statement_DiLanguage
-          | statement_DiService
+            stparse!(DiLanguage)
+          | stparse!(DiService)
         ))),
         (langs)
     );
     // MIFNOTE: this is documented as a string, but doesn't seem to be
     st!(DiLanguage, (lang: mif_parse_dilanguage), (lang));
-    // TODO: unsure if these are
+    // TODO: unsure if these are always in this order
     st!(DiService, (
-            sp: statement_DiSpellProvider >>
-            hp: statement_DiHyphenProvider
+            sp: stparse!(DiSpellProvider) >>
+            hp: stparse!(DiHyphenProvider)
         ), (Box::new(sp), Box::new(hp))
     );
     // TODO: only two permitted strings here
@@ -563,23 +628,19 @@ mod parser {
     // TODO
     st!(CombinedFontCatalog, (), ());
 
-    named!(toplevelstatement<MIFTree>,
-        alt_complete!(
-            statement_MIFFile
-          | statement_Units
-          | statement_CharUnits
-          | statement_ColorCatalog
-          | statement_ConditionCatalog
-          | statement_BoolCondCatalog
-          | statement_DefAttrValuesCatalog
-          | statement_AttrCondExprCatalog
-          | statement_DictionaryPreferences
-          | statement_CombinedFontCatalog
-        )
-    );
-
     named!(fullmiffile<Vec<MIFTree>>,
-        complete!(many0!(ws!(toplevelstatement)))
+        many0!(sep!(maybe_spaces_and_comments, alt_complete!(
+            stparse!(MIFFile)
+          | stparse!(Units)
+          | stparse!(CharUnits)
+          | stparse!(ColorCatalog)
+          | stparse!(ConditionCatalog)
+          | stparse!(BoolCondCatalog)
+          | stparse!(DefAttrValuesCatalog)
+          | stparse!(AttrCondExprCatalog)
+          | stparse!(DictionaryPreferences)
+          | stparse!(CombinedFontCatalog)
+        )))
     );
 }
 
