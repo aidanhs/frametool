@@ -1,3 +1,4 @@
+#![recursion_limit="200"]
 #![feature(plugin,range_contains,trace_macros)]
 #![plugin(interpolate_idents)]
 extern crate either;
@@ -48,7 +49,7 @@ mod parser {
     use nom::anychar;
     use nom::digit;
     use nom::eol;
-    use nom::is_digit;
+    use nom::{is_alphanumeric, is_digit};
     use nom::multispace;
     use nom::non_empty;
     use nom::not_line_ending;
@@ -57,7 +58,8 @@ mod parser {
     #[derive(Debug)]
     enum MIFTree<'a> {
         MIFFile(&'a str),
-        Units(MIFUnit),
+        // MIFNOTE: undocumented
+        Units(&'a [u8]),
         CharUnits(MIFCharUnit),
 
         ColorCatalog(Vec<MIFTree<'a>>),
@@ -110,6 +112,108 @@ mod parser {
         DiHyphenProvider(&'a str),
 
         CombinedFontCatalog,
+
+        PgfCatalog(Vec<MIFTree<'a>>),
+        Pgf(Vec<MIFTree<'a>>),
+        PgfTag(&'a str),
+        PgfUseNextTag(bool),
+        PgfNextTag(&'a str),
+        PgfFIndent((f64, MIFUnit)),
+        PgfFIndentRelative(bool),
+        PgfFIndentOffset((f64, MIFUnit)),
+        PgfLIndent((f64, MIFUnit)),
+        PgfRIndent((f64, MIFUnit)),
+        PgfAlignment(MIFKeyword<'a>),
+        PgfDir(MIFKeyword<'a>),
+        PgfSpBefore((f64, MIFUnit)),
+        PgfSpAfter((f64, MIFUnit)),
+        PgfLineSpacing(MIFKeyword<'a>),
+        PgfLeading((f64, MIFUnit)),
+        PgfNumTabs(u64),
+        TabStop(Vec<MIFTree<'a>>),
+        TSX((f64, MIFUnit)),
+        TSType(MIFKeyword<'a>),
+        TSLeaderStr(&'a str),
+        TSDecimalChar(u64),
+        PgfPlacement(MIFKeyword<'a>),
+        PgfPlacementStyle(MIFKeyword<'a>),
+        PgfRunInDefaultPunct(&'a str),
+        PgfWithPrev(bool),
+        PgfWithNext(bool),
+        PgfBlockSize(u64),
+        PgfAutoNum(bool),
+        PgfNumFormat(&'a str),
+        PgfNumberFont(&'a str),
+        PgfNumAtEnd(bool),
+        PgfHyphenate(bool),
+        HyphenMaxLines(u64),
+        HyphenMinPrefix(u64),
+        HyphenMinSuffix(u64),
+        HyphenMinWord(u64),
+        PgfLetterSpace(bool),
+        PgfMinWordSpace(u64),
+        PgfOptWordSpace(u64),
+        PgfMaxWordSpace(u64),
+        PgfLanguage(MIFKeyword<'a>),
+        PgfTopSeparator(&'a str),
+        PgfTopSepAtIndent(bool),
+        PgfTopSepOffset((f64, MIFUnit)),
+        PgfBoxColor(MIFKeyword<'a>),
+        PgfBotSeparator(&'a str),
+        PgfBotSepAtIndent(bool),
+        PgfBotSepOffset((f64, MIFUnit)),
+        PgfCellAlignment(MIFKeyword<'a>),
+        PgfCellMargins(((f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit))),
+        PgfCellLMarginFixed(bool),
+        PgfCellTMarginFixed(bool),
+        PgfCellRMarginFixed(bool),
+        PgfCellBMarginFixed(bool),
+        PgfLocked(bool),
+        PgfAcrobatLevel(u64),
+        // MIFNOTE: these 7 aren't really documented
+        PgfMinJRomanLetterSpace(f64),
+        PgfOptJRomanLetterSpace(f64),
+        PgfMaxJRomanLetterSpace(f64),
+        PgfMinJLetterSpace(f64),
+        PgfOptJLetterSpace(f64),
+        PgfMaxJLetterSpace(f64),
+        PgfYakumonoType(MIFKeyword<'a>),
+        // MIFNOTE: undocumented
+        PgfPDFStructureLevel(u64),
+
+        PgfFont(Vec<MIFTree<'a>>),
+        Font(Vec<MIFTree<'a>>),
+        FTag(&'a str),
+        FFamily(&'a str),
+        FAngle(&'a str),
+        FWeight(&'a str),
+        FVar(&'a str),
+        FPostScriptName(&'a str),
+        FPlatformName(&'a str),
+        FLanguage(MIFKeyword<'a>),
+        FEncoding(&'a str),
+        FSize((f64, MIFUnit)),
+        FColor(&'a str),
+        FSeparation(u64),
+        FStretch(f64),
+        FBackgroundColor(MIFKeyword<'a>),
+        FUnderlining(MIFKeyword<'a>),
+        FOverline(bool),
+        FStrike(bool),
+        FChangeBar(bool),
+        FPosition(MIFKeyword<'a>),
+        FOutline(bool),
+        FShadow(bool),
+        FPairKern(bool),
+        FCase(MIFKeyword<'a>),
+        FDX(f64),
+        FDY(f64),
+        FDW(f64),
+        FTsume(bool),
+        FPlain(bool),
+        FBold(bool),
+        FItalic(bool),
+        FLocked(bool),
     }
 
     enum MIFErr {
@@ -152,7 +256,6 @@ mod parser {
         ColorIsOlive,
         ColorIsSalmon,
         ColorIsReserved,
-
         // MIFNOTE: Undocumented
         ColorIsDarkYellow,
     }
@@ -179,6 +282,11 @@ mod parser {
         USEnglish,
         UKEnglish,
     }
+
+    // TODO: placeholder so I don't have to specify all possible values
+    // everywhere up-front - eventually this should be removed
+    #[derive(Debug)]
+    struct MIFKeyword<'a>(&'a [u8]);
 
     pub fn parse(mif: &[u8]) {
         match fullmiffile(mif) {
@@ -266,10 +374,10 @@ mod parser {
     named!(mif_parse_decimal<f64>,
         map_res!(
             recognize!(
-                alt_complete!(
+                preceded!(opt!(char!(b'-')), alt_complete!(
                     delimited!(digit, tag!("."), digit)
                   | digit
-                )
+                ))
             ),
             |bytes| {
                 match str::from_utf8(bytes).map(|s| f64::from_str(s)) {
@@ -303,23 +411,24 @@ mod parser {
           | tag!(b"Q") =>  { |_| MIFCharUnit::Q }
         )>> (unit))
     );
-    named!(mif_parse_Uunit<MIFUnit>,
-        do_parse!(tag!(b"U") >> unit: mif_parse_unit >> (unit))
+    // MIFNOTE: since this is undocumented, dunno the possible values
+    named!(mif_parse_Uunit<&[u8]>,
+        do_parse!(tag!(b"U") >> unit: alphanumeric >> (unit))
     );
     named!(mif_parse_unit<MIFUnit>,
         alt_complete!(
-            tag!(b"cm") =>     { |_| MIFUnit::Centimeters }
-          | tag!(b"cicero") => { |_| MIFUnit::Ciceros }
-          | tag!(b"cc") =>     { |_| MIFUnit::Ciceros }
-          | tag!(b"dd") =>     { |_| MIFUnit::Didots }
-          | tag!(b"in") =>     { |_| MIFUnit::Inches }
-          | tag!(b"\"") =>     { |_| MIFUnit::Inches }
-          | tag!(b"mm") =>     { |_| MIFUnit::Millimeters }
-          | tag!(b"pica") =>   { |_| MIFUnit::Picas }
-          | tag!(b"pi") =>     { |_| MIFUnit::Picas }
-          | tag!(b"pc") =>     { |_| MIFUnit::Picas }
-          | tag!(b"point") =>  { |_| MIFUnit::Points }
-          | tag!(b"pt") =>     { |_| MIFUnit::Points }
+            tag!(b" cm") =>     { |_| MIFUnit::Centimeters }
+          | tag!(b" cicero") => { |_| MIFUnit::Ciceros }
+          | tag!(b" cc") =>     { |_| MIFUnit::Ciceros }
+          | tag!(b" dd") =>     { |_| MIFUnit::Didots }
+          | tag!(b" in") =>     { |_| MIFUnit::Inches }
+          | tag!(b"\"") =>      { |_| MIFUnit::Inches }
+          | tag!(b" mm") =>     { |_| MIFUnit::Millimeters }
+          | tag!(b" pica") =>   { |_| MIFUnit::Picas }
+          | tag!(b" pi") =>     { |_| MIFUnit::Picas }
+          | tag!(b" pc") =>     { |_| MIFUnit::Picas }
+          | tag!(b" point") =>  { |_| MIFUnit::Points }
+          | tag!(b" pt") =>     { |_| MIFUnit::Points }
         )
     );
     named!(mif_parse_colorattributekeyword<MIFColorAttributeKeyword>,
@@ -341,7 +450,6 @@ mod parser {
           | tag!(b"ColorIsOlive") =>       { |_| MIFColorAttributeKeyword::ColorIsOlive }
           | tag!(b"ColorIsSalmon") =>      { |_| MIFColorAttributeKeyword::ColorIsSalmon }
           | tag!(b"ColorIsReserved") =>    { |_| MIFColorAttributeKeyword::ColorIsReserved }
-
           | tag!(b"ColorIsDarkYellow") =>  { |_| MIFColorAttributeKeyword::ColorIsDarkYellow }
         )
     );
@@ -368,6 +476,14 @@ mod parser {
         )
     );
 
+    // TODO: should eventually disappear, see note on MIFKeyword
+    fn is_keyword_char(b: u8) -> bool {
+        is_alphanumeric(b) || b == b'.' || b == b'-'
+    }
+    named!(mif_parse_keyword<MIFKeyword>,
+        do_parse!(x: take_while1!(is_keyword_char) >> (MIFKeyword(x)))
+    );
+
     const L_QUOTE: &'static [u8] = b"\x60"; // '
     const R_QUOTE: &'static [u8] = b"\x27"; // `
     named!(data_string<&str>, call!(mif_parse_string));
@@ -384,13 +500,12 @@ mod parser {
     named!(data_ID<u64>,
         map_res!(mif_parse_integer, |i| checkrange(i, 1..65535+1))
     );
-    // TODO: don't just return the untransformed value
-    named!(data_dimension<&[u8]>,
-        // TODO
-        call!(fail)
+    named!(data_dimension<(f64, MIFUnit)>,
+        pair!(mif_parse_decimal, mif_parse_unit)
     );
     named!(data_degrees<f64>, call!(mif_parse_decimal));
-    named!(data_percentage<f64>, call!(mif_parse_decimal));
+    // MIFNOTE: documented as having no units, but actually occasionally has %
+    named!(data_percentage<f64>, terminated!(mif_parse_decimal, opt!(char!(b'%'))));
     // TODO: don't just return the untransformed value
     named!(data_metric<&[u8]>,
         // TODO
@@ -406,10 +521,17 @@ mod parser {
         // TODO
         call!(fail)
     );
-    // TODO: don't just return the untransformed value
-    named!(data_L_T_R_B<&[u8]>,
-        // TODO
-        call!(fail)
+    named!(data_L_T_R_B<((f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit))>,
+        do_parse!(
+            l: pair!(mif_parse_decimal, mif_parse_unit) >>
+            spaces_and_comments >>
+            t: pair!(mif_parse_decimal, mif_parse_unit) >>
+            spaces_and_comments >>
+            r: pair!(mif_parse_decimal, mif_parse_unit) >>
+            spaces_and_comments >>
+            b: pair!(mif_parse_decimal, mif_parse_unit) >>
+            (l, t, r, b)
+        )
     );
     // TODO: don't just return the untransformed value
     named!(data_L_T_W_H<&[u8]>,
@@ -628,6 +750,220 @@ mod parser {
     // TODO
     st!(CombinedFontCatalog, (), ());
 
+    st!(PgfCatalog, (pgfs: many0!(stparse!(Pgf))), (pgfs));
+    // TODO: pgfnumtabs must come before tabstop statements
+    st!(Pgf, (props: many0!(alt_complete!(
+            stparse!(PgfTag)
+          | stparse!(PgfUseNextTag)
+          | stparse!(PgfNextTag)
+          | stparse!(PgfFIndent)
+          | stparse!(PgfFIndentRelative)
+          | stparse!(PgfFIndentOffset)
+          | stparse!(PgfLIndent)
+          | stparse!(PgfRIndent)
+          | stparse!(PgfAlignment)
+          | stparse!(PgfDir)
+          | stparse!(PgfSpBefore)
+          | stparse!(PgfSpAfter)
+          | stparse!(PgfLineSpacing)
+          | stparse!(PgfLeading)
+          | stparse!(PgfNumTabs)
+          | stparse!(TabStop)
+          | stparse!(PgfFont)
+          | stparse!(PgfPlacement)
+          | stparse!(PgfPlacementStyle)
+          | stparse!(PgfRunInDefaultPunct)
+          | stparse!(PgfWithPrev)
+          | stparse!(PgfWithNext)
+          | stparse!(PgfBlockSize)
+          | stparse!(PgfAutoNum)
+          | stparse!(PgfNumFormat)
+          | stparse!(PgfNumberFont)
+          | stparse!(PgfNumAtEnd)
+          | stparse!(PgfHyphenate)
+          | stparse!(HyphenMaxLines)
+          | stparse!(HyphenMinPrefix)
+          | stparse!(HyphenMinSuffix)
+          | stparse!(HyphenMinWord)
+          | stparse!(PgfLetterSpace)
+          | stparse!(PgfMinWordSpace)
+          | stparse!(PgfOptWordSpace)
+          | stparse!(PgfMaxWordSpace)
+          | stparse!(PgfLanguage)
+          | stparse!(PgfTopSeparator)
+          | stparse!(PgfTopSepAtIndent)
+          | stparse!(PgfTopSepOffset)
+          | stparse!(PgfBoxColor)
+          | stparse!(PgfBotSeparator)
+          | stparse!(PgfBotSepAtIndent)
+          | stparse!(PgfBotSepOffset)
+          | stparse!(PgfCellAlignment)
+          | stparse!(PgfCellMargins)
+          | stparse!(PgfCellLMarginFixed)
+          | stparse!(PgfCellTMarginFixed)
+          | stparse!(PgfCellRMarginFixed)
+          | stparse!(PgfCellBMarginFixed)
+          | stparse!(PgfLocked)
+          | stparse!(PgfAcrobatLevel)
+          | stparse!(PgfMinJRomanLetterSpace)
+          | stparse!(PgfOptJRomanLetterSpace)
+          | stparse!(PgfMaxJRomanLetterSpace)
+          | stparse!(PgfMinJLetterSpace)
+          | stparse!(PgfOptJLetterSpace)
+          | stparse!(PgfMaxJLetterSpace)
+          | stparse!(PgfYakumonoType)
+          | stparse!(PgfPDFStructureLevel)
+        ))),
+        (props)
+    );
+    st!(PgfTag, (val: data_tagstring), (val));
+    st!(PgfUseNextTag, (val: data_boolean), (val));
+    st!(PgfNextTag, (val: data_tagstring), (val));
+    st!(PgfFIndent, (val: data_dimension), (val));
+    st!(PgfFIndentRelative, (val: data_boolean), (val));
+    st!(PgfFIndentOffset, (val: data_dimension), (val));
+    st!(PgfLIndent, (val: data_dimension), (val));
+    st!(PgfRIndent, (val: data_dimension), (val));
+    st!(PgfAlignment, (val: mif_parse_keyword), (val));
+    st!(PgfDir, (val: mif_parse_keyword), (val));
+    st!(PgfSpBefore, (val: data_dimension), (val));
+    st!(PgfSpAfter, (val: data_dimension), (val));
+    st!(PgfLineSpacing, (val: mif_parse_keyword), (val));
+    st!(PgfLeading, (val: data_dimension), (val));
+    st!(PgfNumTabs, (val: data_integer), (val));
+    st!(TabStop,
+        (props: many0!(alt_complete!(
+            stparse!(TSX)
+          | stparse!(TSType)
+          | stparse!(TSLeaderStr)
+          | stparse!(TSDecimalChar)
+        ))), (props)
+    );
+    st!(TSX, (val: data_dimension), (val));
+    st!(TSType, (val: mif_parse_keyword), (val));
+    st!(TSLeaderStr, (val: data_string), (val));
+    st!(TSDecimalChar, (val: data_integer), (val));
+    st!(PgfPlacement, (val: mif_parse_keyword), (val));
+    st!(PgfPlacementStyle, (val: mif_parse_keyword), (val));
+    st!(PgfRunInDefaultPunct, (val: data_string), (val));
+    st!(PgfWithPrev, (val: data_boolean), (val));
+    st!(PgfWithNext, (val: data_boolean), (val));
+    st!(PgfBlockSize, (val: data_integer), (val));
+    st!(PgfAutoNum, (val: data_boolean), (val));
+    st!(PgfNumFormat, (val: data_string), (val));
+    st!(PgfNumberFont, (val: data_tagstring), (val));
+    st!(PgfNumAtEnd, (val: data_boolean), (val));
+    st!(PgfHyphenate, (val: data_boolean), (val));
+    st!(HyphenMaxLines, (val: data_integer), (val));
+    st!(HyphenMinPrefix, (val: data_integer), (val));
+    st!(HyphenMinSuffix, (val: data_integer), (val));
+    st!(HyphenMinWord, (val: data_integer), (val));
+    st!(PgfLetterSpace, (val: data_boolean), (val));
+    st!(PgfMinWordSpace, (val: data_integer), (val));
+    st!(PgfOptWordSpace, (val: data_integer), (val));
+    st!(PgfMaxWordSpace, (val: data_integer), (val));
+    st!(PgfLanguage, (val: mif_parse_keyword), (val));
+    st!(PgfTopSeparator, (val: data_string), (val));
+    st!(PgfTopSepAtIndent, (val: data_boolean), (val));
+    st!(PgfTopSepOffset, (val: data_dimension), (val));
+    // MIFNOTE: documented as just a tagstring, not sure what NoColor is
+    // but I don't currently have any other examples
+    st!(PgfBoxColor, (val: tag!(b"NoColor")), (MIFKeyword(val)));
+    st!(PgfBotSeparator, (val: data_string), (val));
+    st!(PgfBotSepAtIndent, (val: data_boolean), (val));
+    st!(PgfBotSepOffset, (val: data_dimension), (val));
+    st!(PgfCellAlignment, (val: mif_parse_keyword), (val));
+    st!(PgfCellMargins, (val: data_L_T_R_B), (val));
+    st!(PgfCellLMarginFixed, (val: data_boolean), (val));
+    st!(PgfCellTMarginFixed, (val: data_boolean), (val));
+    st!(PgfCellRMarginFixed, (val: data_boolean), (val));
+    st!(PgfCellBMarginFixed, (val: data_boolean), (val));
+    st!(PgfLocked, (val: data_boolean), (val));
+    st!(PgfAcrobatLevel, (val: data_integer), (val));
+    st!(PgfMinJRomanLetterSpace, (val: data_percentage), (val));
+    st!(PgfOptJRomanLetterSpace, (val: data_percentage), (val));
+    st!(PgfMaxJRomanLetterSpace, (val: data_percentage), (val));
+    st!(PgfMinJLetterSpace, (val: data_percentage), (val));
+    st!(PgfOptJLetterSpace, (val: data_percentage), (val));
+    st!(PgfMaxJLetterSpace, (val: data_percentage), (val));
+    // MIFNOTE: 'documented' (not really documented) as a string, but not
+    // sure what Floating is and don't have any other examples
+    st!(PgfYakumonoType, (val: tag!(b"Floating")), (MIFKeyword(val)));
+    st!(PgfPDFStructureLevel, (val: data_integer), (val));
+
+    st!(PgfFont, (props: many0!(fontparts)), (props));
+    st!(Font, (props: many0!(fontparts)), (props));
+    named!(fontparts<MIFTree>,
+        alt_complete!(
+            stparse!(FTag)
+          | stparse!(FFamily)
+          | stparse!(FAngle)
+          | stparse!(FWeight)
+          | stparse!(FVar)
+          | stparse!(FPostScriptName)
+          | stparse!(FPlatformName)
+          | stparse!(FLanguage)
+          | stparse!(FEncoding)
+          | stparse!(FSize)
+          | stparse!(FColor)
+          | stparse!(FSeparation)
+          | stparse!(FStretch)
+          | stparse!(FBackgroundColor)
+          | stparse!(FUnderlining)
+          | stparse!(FOverline)
+          | stparse!(FStrike)
+          | stparse!(FChangeBar)
+          | stparse!(FPosition)
+          | stparse!(FOutline)
+          | stparse!(FShadow)
+          | stparse!(FPairKern)
+          | stparse!(FCase)
+          | stparse!(FDX)
+          | stparse!(FDY)
+          | stparse!(FDW)
+          | stparse!(FTsume)
+          | stparse!(FPlain)
+          | stparse!(FBold)
+          | stparse!(FItalic)
+          | stparse!(FLocked)
+        )
+    );
+
+    st!(FTag, (val: data_tagstring), (val));
+    st!(FFamily, (val: data_string), (val));
+    st!(FAngle, (val: data_string), (val));
+    st!(FWeight, (val: data_string), (val));
+    st!(FVar, (val: data_string), (val));
+    st!(FPostScriptName, (val: data_string), (val));
+    st!(FPlatformName, (val: data_string), (val));
+    st!(FLanguage, (val: mif_parse_keyword), (val));
+    // MIFNOTE: documented to be a keyword, appears to actually be a string
+    st!(FEncoding, (val: data_string), (val));
+    st!(FSize, (val: data_dimension), (val));
+    st!(FColor, (val: data_tagstring), (val));
+    st!(FSeparation, (val: data_integer), (val));
+    st!(FStretch, (val: data_percentage), (val));
+    // MIFNOTE: documented as just a tagstring, not sure what NoColor is
+    // but I don't currently have any other examples
+    st!(FBackgroundColor, (val: tag!(b"NoColor")), (MIFKeyword(val)));
+    st!(FUnderlining, (val: mif_parse_keyword), (val));
+    st!(FOverline, (val: data_boolean), (val));
+    st!(FStrike, (val: data_boolean), (val));
+    st!(FChangeBar, (val: data_boolean), (val));
+    st!(FPosition, (val: mif_parse_keyword), (val));
+    st!(FOutline, (val: data_boolean), (val));
+    st!(FShadow, (val: data_boolean), (val));
+    st!(FPairKern, (val: data_boolean), (val));
+    st!(FCase, (val: mif_parse_keyword), (val));
+    st!(FDX, (val: data_percentage), (val));
+    st!(FDY, (val: data_percentage), (val));
+    st!(FDW, (val: data_percentage), (val));
+    st!(FTsume, (val: data_boolean), (val));
+    st!(FPlain, (val: data_boolean), (val));
+    st!(FBold, (val: data_boolean), (val));
+    st!(FItalic, (val: data_boolean), (val));
+    st!(FLocked, (val: data_boolean), (val));
+
     named!(fullmiffile<Vec<MIFTree>>,
         many0!(sep!(maybe_spaces_and_comments, alt_complete!(
             stparse!(MIFFile)
@@ -640,6 +976,7 @@ mod parser {
           | stparse!(AttrCondExprCatalog)
           | stparse!(DictionaryPreferences)
           | stparse!(CombinedFontCatalog)
+          | stparse!(PgfCatalog)
         )))
     );
 }
