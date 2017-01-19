@@ -491,7 +491,7 @@ mod parser {
     // TODO: don't just return the untransformed value
     named!(data_path<&str>, call!(mif_parse_string));
     named!(data_boolean<bool>,
-        alt!(
+        alt_complete!(
             tag!(b"Yes") => { |_| true }
           | tag!(b"No") =>  { |_| false }
         )
