@@ -1,20 +1,16 @@
 #![recursion_limit="200"]
 #![feature(plugin,range_contains,trace_macros)]
 #![plugin(interpolate_idents)]
-extern crate either;
+#![feature(field_init_shorthand)]
+
+extern crate combine;
 #[macro_use]
 extern crate nom;
-extern crate regex;
 
-use std::collections::HashMap;
+use std::cmp;
 use std::fs::File;
 use std::io::prelude::*;
-use std::iter;
-use std::mem;
 use std::str;
-use std::usize;
-
-use regex::Regex;
 
 const MIF: &'static str = "/media/aidanhs/OS/Users/aidanhs/Desktop/ch01__.mif";
 const FM: &'static str =  "/media/aidanhs/OS/Users/aidanhs/Desktop/ch01__.fm";
@@ -26,40 +22,47 @@ fn main() {
 fn mif2asciidoc() {
     let mut mifvec = vec![];
     //File::open(MIF).unwrap().read_to_end(&mut mifvec).unwrap();
-    File::open("y.mif").unwrap().read_to_end(&mut mifvec).unwrap();
+    File::open("z.mif").unwrap().read_to_end(&mut mifvec).unwrap();
+    mifvec.retain(|&b| b != b'\r');
+    mifvec.push(b'\n');
 
     //let mifstr = str::from_utf8(&mifvec).unwrap();
-    parser::parse(&mifvec)
+    let miftokens = lex::lex(&mifvec);
+    parser::parse(&miftokens);
 }
+
+fn briefer_slice<T>(sl: &[T]) -> &[T] {
+    &sl[..cmp::min(sl.len(), 100)]
+}
+fn briefer_utf8(bs: &[u8]) -> &str {
+    &str::from_utf8(briefer_slice(bs)).unwrap()
+}
+
+mod lex;
 
 mod parser {
     #![allow(non_snake_case)]
 
+    use super::briefer_slice;
+    use super::lex::MIFToken;
+
+    use std::ascii::AsciiExt;
     use std::ops::Range;
     use std::str;
     use std::str::FromStr;
 
-    use either::Either;
-
+    use nom;
     use nom::Err;
     use nom::ErrorKind;
     use nom::IResult;
-    use nom::alpha;
     use nom::alphanumeric;
-    use nom::anychar;
     use nom::digit;
-    use nom::eol;
-    use nom::{is_alphanumeric, is_digit};
-    use nom::multispace;
-    use nom::non_empty;
-    use nom::not_line_ending;
-    use nom::whitespace::sp;
 
     #[derive(Debug)]
     enum MIFTree<'a> {
         MIFFile(&'a str),
         // MIFNOTE: undocumented
-        Units(&'a [u8]),
+        Units(&'a str),
         CharUnits(MIFCharUnit),
 
         ColorCatalog(Vec<MIFTree<'a>>),
@@ -286,12 +289,12 @@ mod parser {
     // TODO: placeholder so I don't have to specify all possible values
     // everywhere up-front - eventually this should be removed
     #[derive(Debug)]
-    struct MIFKeyword<'a>(&'a [u8]);
+    struct MIFKeyword<'a>(&'a str);
 
-    pub fn parse(mif: &[u8]) {
-        match fullmiffile(mif) {
+    pub fn parse(tokens: &[MIFToken]) {
+        match fullmiffile(tokens) {
             IResult::Done(unparsed, miftree) => {
-                println!("DONE: {:?}\n\n\nunparsed:{:?}", miftree, str::from_utf8(unparsed).unwrap());
+                println!("DONE: {:?}\n\n\nunparsed:{:?}", miftree, unparsed);
             },
             IResult::Error(e) => {
                 println!("ERROR:\n");
@@ -307,11 +310,11 @@ mod parser {
                             *next
                         },
                         Err::Position(e, p) => {
-                            println!("POSITION: {:?} {:?}\n", e, &str::from_utf8(p).unwrap()[..100]);
+                            println!("POSITION: {:?} {:?}\n", e, briefer_slice(p));
                             break
                         },
                         Err::NodePosition(e, p, next) => {
-                            println!("NODEPOSITION: {:?} {:?}\n", e, &str::from_utf8(p).unwrap()[..100]);
+                            println!("NODEPOSITION: {:?} {:?}\n", e, briefer_slice(p));
                             *next
                         },
                     }
@@ -371,238 +374,229 @@ mod parser {
         IResult::Error(error_code!(ErrorKind::Custom(8965)))
     }
 
-    named!(mif_parse_decimal<f64>,
-        map_res!(
-            recognize!(
-                preceded!(opt!(char!(b'-')), alt_complete!(
-                    delimited!(digit, tag!("."), digit)
-                  | digit
-                ))
-            ),
-            |bytes| {
-                match str::from_utf8(bytes).map(|s| f64::from_str(s)) {
-                    Ok(Ok(n)) => Ok(n),
-                    Ok(Err(parsefloaterr)) => Err(Either::Left(parsefloaterr)),
-                    Err(utf8err) => Err(Either::Right(utf8err)),
+    // Ouch - without this, a trailing optional in a do_parse will make the
+    // whole do_parse incomplete, which then errors
+    macro_rules! optional (
+        ($i:expr, $( $rest:tt )*) => (opt!($i, complete!($( $rest )*)));
+    );
+
+    macro_rules! tok (
+        ($i:expr, $out:expr, $( $part:tt )*) => (
+            {
+                if $i.is_empty() {
+                    let res: nom::IResult<_, _> = nom::IResult::Incomplete(nom::Needed::Size(1));
+                    res
+                } else {
+                    #[allow(unused)]
+                    use self::MIFToken::*;
+                    match $i[0] {
+                        $( $part )* => nom::IResult::Done(&$i[1..], $out),
+                        _ => nom::IResult::Error(error_position!(nom::ErrorKind::Char, $i)),
+                    }
                 }
             }
-        )
+        );
+        ($i:expr, $( $part:tt )*) => (
+            tok!($i, e, e @ $( $part )*)
+        );
     );
-    named!(mif_parse_integer<u64>,
-        map_res!(digit, |bytes| {
-            match str::from_utf8(bytes).map(|s| u64::from_str_radix(s, 10)) {
-                Ok(Ok(n)) => Ok(n),
-                Ok(Err(parseinterr)) => Err(Either::Left(parseinterr)),
-                Err(utf8err) => Err(Either::Right(utf8err)),
+    macro_rules! tokmap (
+        ($i:expr, $( $rest:tt )*) => (
+            flat_map!($i, tok!(u, Token(u)), do_parse!(x: $( $rest )* >> eof!() >> (x)))
+        );
+    );
+
+    macro_rules! mynamed (
+        ($name:ident<$t:ty>, $submac:ident!( $( $args:tt )* )) => (
+            fn $name<'a, 'b>(i: &'b [MIFToken<'a>]) -> IResult<&'b [MIFToken<'a>], $t, u32> {
+                $submac!(i, $( $args )*)
             }
-        })
-    );
-    named!(mif_parse_string<&str>,
-        do_parse!(
-            tag!(L_QUOTE) >>
-            s: map_res!(take_until!(R_QUOTE), str::from_utf8) >>
-            tag!(R_QUOTE) >>
-            (s)
         )
     );
-    named!(mif_parse_charunit<MIFCharUnit>,
-        do_parse!(tag!(b"CU") >> unit: alt_complete!(
-            tag!(b"pt") => { |_| MIFCharUnit::Points }
-          | tag!(b"Q") =>  { |_| MIFCharUnit::Q }
-        )>> (unit))
+
+    named!(parse_decimal_str<&str, f64>,
+        map_res!(recognize!(
+            preceded!(optional!(tag!("-")), alt_complete!(
+                delimited!(digit, tag!("."), digit)
+              | digit
+            ))
+        ), f64::from_str)
+    );
+
+    mynamed!(mif_parse_decimal<f64>, tokmap!(parse_decimal_str));
+    mynamed!(mif_parse_percentage<f64>,
+        tokmap!(do_parse!(p: parse_decimal_str >> optional!(tag!("%")) >> (p)))
+    );
+    mynamed!(mif_parse_integer<u64>,
+        tokmap!(map_res!(digit, |s| u64::from_str_radix(s, 10)))
+    );
+    mynamed!(mif_parse_charunit<MIFCharUnit>,
+        tokmap!(do_parse!(tag!("CU") >> unit: alt_complete!(
+            tag!("pt") => { |_| MIFCharUnit::Points }
+          | tag!("Q") =>  { |_| MIFCharUnit::Q }
+        ) >> (unit)))
     );
     // MIFNOTE: since this is undocumented, dunno the possible values
-    named!(mif_parse_Uunit<&[u8]>,
-        do_parse!(tag!(b"U") >> unit: alphanumeric >> (unit))
+    mynamed!(mif_parse_Uunit<&'a str>,
+        tokmap!(do_parse!(tag!("U") >> unit: alphanumeric >> (unit)))
     );
-    named!(mif_parse_unit<MIFUnit>,
-        alt_complete!(
-            tag!(b" cm") =>     { |_| MIFUnit::Centimeters }
-          | tag!(b" cicero") => { |_| MIFUnit::Ciceros }
-          | tag!(b" cc") =>     { |_| MIFUnit::Ciceros }
-          | tag!(b" dd") =>     { |_| MIFUnit::Didots }
-          | tag!(b" in") =>     { |_| MIFUnit::Inches }
-          | tag!(b"\"") =>      { |_| MIFUnit::Inches }
-          | tag!(b" mm") =>     { |_| MIFUnit::Millimeters }
-          | tag!(b" pica") =>   { |_| MIFUnit::Picas }
-          | tag!(b" pi") =>     { |_| MIFUnit::Picas }
-          | tag!(b" pc") =>     { |_| MIFUnit::Picas }
-          | tag!(b" point") =>  { |_| MIFUnit::Points }
-          | tag!(b" pt") =>     { |_| MIFUnit::Points }
+    // TODO: this doesn't currently handle " for inches as it's tokenised as one token
+    // TODO: it's not clear whether it's valid to have more than one space between
+    // number and unit - because tokenisation happens first, it is permitted
+    mynamed!(mif_parse_num_unit<(f64, MIFUnit)>,
+        pair!(
+            mif_parse_decimal,
+            tokmap!(alt_complete!(
+                tag!("cm") =>     { |_| MIFUnit::Centimeters }
+              | tag!("cicero") => { |_| MIFUnit::Ciceros }
+              | tag!("cc") =>     { |_| MIFUnit::Ciceros }
+              | tag!("dd") =>     { |_| MIFUnit::Didots }
+              | tag!("in") =>     { |_| MIFUnit::Inches }
+              //| tag!("\"") =>      { |_| MIFUnit::Inches }
+              | tag!("mm") =>     { |_| MIFUnit::Millimeters }
+              | tag!("pica") =>   { |_| MIFUnit::Picas }
+              | tag!("pi") =>     { |_| MIFUnit::Picas }
+              | tag!("pc") =>     { |_| MIFUnit::Picas }
+              | tag!("point") =>  { |_| MIFUnit::Points }
+              | tag!("pt") =>     { |_| MIFUnit::Points }
+            ))
         )
     );
-    named!(mif_parse_colorattributekeyword<MIFColorAttributeKeyword>,
-        alt_complete!(
-            tag!(b"ColorIsBlack") =>       { |_| MIFColorAttributeKeyword::ColorIsBlack }
-          | tag!(b"ColorIsWhite") =>       { |_| MIFColorAttributeKeyword::ColorIsWhite }
-          | tag!(b"ColorIsRed") =>         { |_| MIFColorAttributeKeyword::ColorIsRed }
-          | tag!(b"ColorIsGreen") =>       { |_| MIFColorAttributeKeyword::ColorIsGreen }
-          | tag!(b"ColorIsBlue") =>        { |_| MIFColorAttributeKeyword::ColorIsBlue }
-          | tag!(b"ColorIsCyan") =>        { |_| MIFColorAttributeKeyword::ColorIsCyan }
-          | tag!(b"ColorIsMagenta") =>     { |_| MIFColorAttributeKeyword::ColorIsMagenta }
-          | tag!(b"ColorIsYellow") =>      { |_| MIFColorAttributeKeyword::ColorIsYellow }
-          | tag!(b"ColorIsDarkGrey") =>    { |_| MIFColorAttributeKeyword::ColorIsDarkGrey }
-          | tag!(b"ColorIsPaleGreen") =>   { |_| MIFColorAttributeKeyword::ColorIsPaleGreen }
-          | tag!(b"ColorIsForestGreen") => { |_| MIFColorAttributeKeyword::ColorIsForestGreen }
-          | tag!(b"ColorIsRoyalBlue") =>   { |_| MIFColorAttributeKeyword::ColorIsRoyalBlue }
-          | tag!(b"ColorIsMauve") =>       { |_| MIFColorAttributeKeyword::ColorIsMauve }
-          | tag!(b"ColorIsLightSalmon") => { |_| MIFColorAttributeKeyword::ColorIsLightSalmon }
-          | tag!(b"ColorIsOlive") =>       { |_| MIFColorAttributeKeyword::ColorIsOlive }
-          | tag!(b"ColorIsSalmon") =>      { |_| MIFColorAttributeKeyword::ColorIsSalmon }
-          | tag!(b"ColorIsReserved") =>    { |_| MIFColorAttributeKeyword::ColorIsReserved }
-          | tag!(b"ColorIsDarkYellow") =>  { |_| MIFColorAttributeKeyword::ColorIsDarkYellow }
-        )
+    mynamed!(mif_parse_colorattributekeyword<MIFColorAttributeKeyword>,
+        tokmap!(alt_complete!(
+            tag!("ColorIsBlack") =>       { |_| MIFColorAttributeKeyword::ColorIsBlack }
+          | tag!("ColorIsWhite") =>       { |_| MIFColorAttributeKeyword::ColorIsWhite }
+          | tag!("ColorIsRed") =>         { |_| MIFColorAttributeKeyword::ColorIsRed }
+          | tag!("ColorIsGreen") =>       { |_| MIFColorAttributeKeyword::ColorIsGreen }
+          | tag!("ColorIsBlue") =>        { |_| MIFColorAttributeKeyword::ColorIsBlue }
+          | tag!("ColorIsCyan") =>        { |_| MIFColorAttributeKeyword::ColorIsCyan }
+          | tag!("ColorIsMagenta") =>     { |_| MIFColorAttributeKeyword::ColorIsMagenta }
+          | tag!("ColorIsYellow") =>      { |_| MIFColorAttributeKeyword::ColorIsYellow }
+          | tag!("ColorIsDarkGrey") =>    { |_| MIFColorAttributeKeyword::ColorIsDarkGrey }
+          | tag!("ColorIsPaleGreen") =>   { |_| MIFColorAttributeKeyword::ColorIsPaleGreen }
+          | tag!("ColorIsForestGreen") => { |_| MIFColorAttributeKeyword::ColorIsForestGreen }
+          | tag!("ColorIsRoyalBlue") =>   { |_| MIFColorAttributeKeyword::ColorIsRoyalBlue }
+          | tag!("ColorIsMauve") =>       { |_| MIFColorAttributeKeyword::ColorIsMauve }
+          | tag!("ColorIsLightSalmon") => { |_| MIFColorAttributeKeyword::ColorIsLightSalmon }
+          | tag!("ColorIsOlive") =>       { |_| MIFColorAttributeKeyword::ColorIsOlive }
+          | tag!("ColorIsSalmon") =>      { |_| MIFColorAttributeKeyword::ColorIsSalmon }
+          | tag!("ColorIsReserved") =>    { |_| MIFColorAttributeKeyword::ColorIsReserved }
+          | tag!("ColorIsDarkYellow") =>  { |_| MIFColorAttributeKeyword::ColorIsDarkYellow }
+        ))
     );
-    named!(mif_parse_cstatekeyword<MIFCStateKeyword>,
-        alt_complete!(
-            tag!(b"CHidden") => { |_| MIFCStateKeyword::CHidden }
-          | tag!(b"CShown") =>  { |_| MIFCStateKeyword::CShown }
-        )
+    mynamed!(mif_parse_cstatekeyword<MIFCStateKeyword>,
+        tokmap!(alt_complete!(
+            tag!("CHidden") => { |_| MIFCStateKeyword::CHidden }
+          | tag!("CShown") =>  { |_| MIFCStateKeyword::CShown }
+        ))
     );
-    named!(mif_parse_cstylekeyword<MIFCStyleKeyword>,
-        alt_complete!(
-            tag!(b"CAsIs") =>            { |_| MIFCStyleKeyword::CAsIs }
-          | tag!(b"CUnderline") =>       { |_| MIFCStyleKeyword::CUnderline }
-          | tag!(b"CDoubleUnderline") => { |_| MIFCStyleKeyword::CDoubleUnderline }
-          | tag!(b"CStrike") =>          { |_| MIFCStyleKeyword::CStrike }
-          | tag!(b"COverline") =>        { |_| MIFCStyleKeyword::COverline }
-          | tag!(b"CChangeBar") =>       { |_| MIFCStyleKeyword::CChangeBar }
-        )
+    mynamed!(mif_parse_cstylekeyword<MIFCStyleKeyword>,
+        tokmap!(alt_complete!(
+            tag!("CAsIs") =>            { |_| MIFCStyleKeyword::CAsIs }
+          | tag!("CUnderline") =>       { |_| MIFCStyleKeyword::CUnderline }
+          | tag!("CDoubleUnderline") => { |_| MIFCStyleKeyword::CDoubleUnderline }
+          | tag!("CStrike") =>          { |_| MIFCStyleKeyword::CStrike }
+          | tag!("COverline") =>        { |_| MIFCStyleKeyword::COverline }
+          | tag!("CChangeBar") =>       { |_| MIFCStyleKeyword::CChangeBar }
+        ))
     );
-    named!(mif_parse_dilanguage<MIFDiLanguage>,
-        alt_complete!(
-            tag!(b"USEnglish") => { |_| MIFDiLanguage::USEnglish }
-          | tag!(b"UKEnglish") => { |_| MIFDiLanguage::UKEnglish }
-        )
+    mynamed!(mif_parse_dilanguage<MIFDiLanguage>,
+        tokmap!(alt_complete!(
+            tag!("USEnglish") => { |_| MIFDiLanguage::USEnglish }
+          | tag!("UKEnglish") => { |_| MIFDiLanguage::UKEnglish }
+        ))
     );
 
     // TODO: should eventually disappear, see note on MIFKeyword
-    fn is_keyword_char(b: u8) -> bool {
-        is_alphanumeric(b) || b == b'.' || b == b'-'
+    fn is_keyword_char(c: char) -> bool {
+        c.is_ascii() && (c.is_alphanumeric() || c == '.' || c == '-')
     }
-    named!(mif_parse_keyword<MIFKeyword>,
-        do_parse!(x: take_while1!(is_keyword_char) >> (MIFKeyword(x)))
+    mynamed!(mif_parse_keyword<MIFKeyword<'a>>,
+        tokmap!(do_parse!(x: take_while1!(is_keyword_char) >> (MIFKeyword(x))))
     );
 
-    const L_QUOTE: &'static [u8] = b"\x60"; // '
-    const R_QUOTE: &'static [u8] = b"\x27"; // `
-    named!(data_string<&str>, call!(mif_parse_string));
-    named!(data_tagstring<&str>, call!(mif_parse_string));
+    mynamed!(data_string<&'a str>, tok!(s, Str(s)));
+    mynamed!(data_tagstring<&'a str>, tok!(s, Str(s)));
     // TODO: don't just return the untransformed value
-    named!(data_path<&str>, call!(mif_parse_string));
-    named!(data_boolean<bool>,
-        alt_complete!(
-            tag!(b"Yes") => { |_| true }
-          | tag!(b"No") =>  { |_| false }
-        )
+    mynamed!(data_path<&'a str>, tok!(s, Str(s)));
+    mynamed!(data_boolean<bool>,
+        tokmap!(alt_complete!(
+            tag!("Yes") => { |_| true }
+          | tag!("No") =>  { |_| false }
+        ))
     );
-    named!(data_integer<u64>, call!(mif_parse_integer));
-    named!(data_ID<u64>,
+    mynamed!(data_integer<u64>, call!(mif_parse_integer));
+    mynamed!(data_ID<u64>,
         map_res!(mif_parse_integer, |i| checkrange(i, 1..65535+1))
     );
-    named!(data_dimension<(f64, MIFUnit)>,
-        pair!(mif_parse_decimal, mif_parse_unit)
-    );
-    named!(data_degrees<f64>, call!(mif_parse_decimal));
-    // MIFNOTE: documented as having no units, but actually occasionally has %
-    named!(data_percentage<f64>, terminated!(mif_parse_decimal, opt!(char!(b'%'))));
+    mynamed!(data_dimension<(f64, MIFUnit)>, call!(mif_parse_num_unit));
+    mynamed!(data_degrees<f64>, call!(mif_parse_decimal));
+    //// MIFNOTE: documented as having no units, but actually occasionally has %
+    mynamed!(data_percentage<f64>, call!(mif_parse_percentage));
     // TODO: don't just return the untransformed value
-    named!(data_metric<&[u8]>,
+    mynamed!(data_metric<&'a str>,
         // TODO
         call!(fail)
     );
     // TODO: don't just return the untransformed value
-    named!(data_W_H<&[u8]>,
+    mynamed!(data_W_H<&'a str>,
         // TODO
         call!(fail)
     );
     // TODO: don't just return the untransformed value
-    named!(data_X_Y<&[u8]>,
+    mynamed!(data_X_Y<&'a str>,
         // TODO
         call!(fail)
     );
-    named!(data_L_T_R_B<((f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit))>,
+    mynamed!(data_L_T_R_B<((f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit))>,
         do_parse!(
-            l: pair!(mif_parse_decimal, mif_parse_unit) >>
-            spaces_and_comments >>
-            t: pair!(mif_parse_decimal, mif_parse_unit) >>
-            spaces_and_comments >>
-            r: pair!(mif_parse_decimal, mif_parse_unit) >>
-            spaces_and_comments >>
-            b: pair!(mif_parse_decimal, mif_parse_unit) >>
+            l: mif_parse_num_unit >> t: mif_parse_num_unit >>
+            r: mif_parse_num_unit >> b: mif_parse_num_unit >>
             (l, t, r, b)
         )
     );
     // TODO: don't just return the untransformed value
-    named!(data_L_T_W_H<&[u8]>,
+    mynamed!(data_L_T_W_H<&'a str>,
         // TODO
         call!(fail)
     );
     // TODO: don't just return the untransformed value
-    named!(data_X_Y_W_H<&[u8]>,
+    mynamed!(data_X_Y_W_H<&'a str>,
         // TODO
         call!(fail)
     );
 
-    named!(maybe_spaces_and_comments<&[u8],&[u8]>,
-        recognize!(fold_many1!(
-            alt_complete!(
-                do_parse!(
-                    tag!(b"#") >> not_line_ending >> eol >>
-                    (&[][..])
-                )
-              | sp // Returns success even when nothing consumed
-            ),
-            (), |_acc: (), _item| ()
-        ))
-    );
-    named!(spaces_and_comments<&[u8],&[u8]>,
-        recognize!(do_parse!(
-            multispace >>
-            maybe_spaces_and_comments >>
-            (())
-        ))
-    );
     macro_rules! __st_check (
         ($name:ident) => (
             interpolate_idents! {
-                named!([check_ $name]<()>,
-                    peek!(
+                fn [check_ $name]<'a, 'b>(i: &'b [MIFToken<'a>]) -> IResult<&'b [MIFToken<'a>], (), u32> {
+                    peek!(i,
                         do_parse!(
-                            tag!(b"<") >>
-                            maybe_spaces_and_comments >>
-                            tag!(stringify!($name)) >>
-                            spaces_and_comments >>
+                            tok!(StartStatement) >>
+                            tok!(Token(stringify!($name))) >>
                             (())
                         )
                     )
-                );
+                }
             }
         )
     );
     macro_rules! __st_parse (
         ($name:ident, ($( $parsepart:tt )*)) => (
             interpolate_idents! {
-                named!([statement_ $name]<MIFTree>,
-                    delimited!(
+                fn [statement_ $name]<'a, 'b>(i: &'b [MIFToken<'a>]) -> IResult<&'b [MIFToken<'a>], MIFTree<'a>, u32> {
+                    delimited!(i,
                         do_parse!(
-                            tag!(b"<") >>
-                            maybe_spaces_and_comments >>
-                            tag!(stringify!($name)) >>
-                            spaces_and_comments >>
+                            tok!(StartStatement) >>
+                            tok!(Token(stringify!($name))) >>
                             (())
                         ),
-                        // TODO: sep intersperses before and after, as well
-                        // as in-between. We just want in-between, so we have
-                        // to use maybe_ for now. Though I'm not sure how using
-                        // non-maybe_ would work for sub-trees - perhaps they
-                        // don't need spaces between them
-                        sep!(maybe_spaces_and_comments, do_parse!(
+                        do_parse!(
                             $( $parsepart )*
-                        )),
-                        tag!(b">")
+                        ),
+                        tok!(MIFToken::EndStatement)
                     )
-                );
+                }
             }
         );
     );
@@ -629,8 +623,8 @@ mod parser {
         )
     );
 
-    fn isfloatchr(b: u8) -> bool { b == b'.' || (b >= b'0' && b <= b'9') }
-    st!(MIFFile, (vsn: take_while1!(isfloatchr)), (str::from_utf8(vsn).unwrap()));
+    fn isfloatstr(s: &str) -> bool { s.bytes().all(|b| b == b'.' || (b >= b'0' && b <= b'9')) }
+    st!(MIFFile, (vsn: tok!(f, Token(f) if isfloatstr(f))), (vsn));
     st!(Units, (unit: mif_parse_Uunit), (unit));
     st!(CharUnits, (charunit: mif_parse_charunit), (charunit));
 
@@ -868,7 +862,7 @@ mod parser {
     st!(PgfTopSepOffset, (val: data_dimension), (val));
     // MIFNOTE: documented as just a tagstring, not sure what NoColor is
     // but I don't currently have any other examples
-    st!(PgfBoxColor, (val: tag!(b"NoColor")), (MIFKeyword(val)));
+    st!(PgfBoxColor, (val: tokmap!(tag!("NoColor"))), (MIFKeyword(val)));
     st!(PgfBotSeparator, (val: data_string), (val));
     st!(PgfBotSepAtIndent, (val: data_boolean), (val));
     st!(PgfBotSepOffset, (val: data_dimension), (val));
@@ -888,12 +882,12 @@ mod parser {
     st!(PgfMaxJLetterSpace, (val: data_percentage), (val));
     // MIFNOTE: 'documented' (not really documented) as a string, but not
     // sure what Floating is and don't have any other examples
-    st!(PgfYakumonoType, (val: tag!(b"Floating")), (MIFKeyword(val)));
+    st!(PgfYakumonoType, (val: tokmap!(tag!("Floating"))), (MIFKeyword(val)));
     st!(PgfPDFStructureLevel, (val: data_integer), (val));
 
     st!(PgfFont, (props: many0!(fontparts)), (props));
     st!(Font, (props: many0!(fontparts)), (props));
-    named!(fontparts<MIFTree>,
+    mynamed!(fontparts<MIFTree<'a>>,
         alt_complete!(
             stparse!(FTag)
           | stparse!(FFamily)
@@ -945,7 +939,7 @@ mod parser {
     st!(FStretch, (val: data_percentage), (val));
     // MIFNOTE: documented as just a tagstring, not sure what NoColor is
     // but I don't currently have any other examples
-    st!(FBackgroundColor, (val: tag!(b"NoColor")), (MIFKeyword(val)));
+    st!(FBackgroundColor, (val: tokmap!(tag!("NoColor"))), (MIFKeyword(val)));
     st!(FUnderlining, (val: mif_parse_keyword), (val));
     st!(FOverline, (val: data_boolean), (val));
     st!(FStrike, (val: data_boolean), (val));
@@ -964,8 +958,8 @@ mod parser {
     st!(FItalic, (val: data_boolean), (val));
     st!(FLocked, (val: data_boolean), (val));
 
-    named!(fullmiffile<Vec<MIFTree>>,
-        many0!(sep!(maybe_spaces_and_comments, alt_complete!(
+    mynamed!(fullmiffile<Vec<MIFTree<'a>>>,
+        many0!(alt_complete!(
             stparse!(MIFFile)
           | stparse!(Units)
           | stparse!(CharUnits)
@@ -977,7 +971,7 @@ mod parser {
           | stparse!(DictionaryPreferences)
           | stparse!(CombinedFontCatalog)
           | stparse!(PgfCatalog)
-        )))
+        ))
     );
 }
 
@@ -1040,6 +1034,12 @@ mod parser {
 //}
 
 // Attempt to understand the binary format
+//extern crate regex;
+//use std::collections::HashMap;
+//use std::iter;
+//use std::mem;
+//use regex::Regex;
+//
 //fn main2() {
 //    let mut mifvec = vec![];
 //    File::open(MIF).unwrap().read_to_end(&mut mifvec).unwrap();
