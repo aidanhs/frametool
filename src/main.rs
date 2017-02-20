@@ -58,9 +58,13 @@ mod parser {
     use nom::alphanumeric;
     use nom::digit;
 
+    type MIFDimension = (f64, MIFUnit);
+
     #[derive(Debug)]
     enum MIFTree<'a> {
         _Unknown(&'a str),
+
+        Unique(u64),
 
         MIFFile(&'a str),
         // MIFNOTE: undocumented
@@ -123,20 +127,20 @@ mod parser {
         PgfTag(&'a str),
         PgfUseNextTag(bool),
         PgfNextTag(&'a str),
-        PgfFIndent((f64, MIFUnit)),
+        PgfFIndent(MIFDimension),
         PgfFIndentRelative(bool),
-        PgfFIndentOffset((f64, MIFUnit)),
-        PgfLIndent((f64, MIFUnit)),
-        PgfRIndent((f64, MIFUnit)),
+        PgfFIndentOffset(MIFDimension),
+        PgfLIndent(MIFDimension),
+        PgfRIndent(MIFDimension),
         PgfAlignment(MIFKeyword<'a>),
         PgfDir(MIFKeyword<'a>),
-        PgfSpBefore((f64, MIFUnit)),
-        PgfSpAfter((f64, MIFUnit)),
+        PgfSpBefore(MIFDimension),
+        PgfSpAfter(MIFDimension),
         PgfLineSpacing(MIFKeyword<'a>),
-        PgfLeading((f64, MIFUnit)),
+        PgfLeading(MIFDimension),
         PgfNumTabs(u64),
         TabStop(Vec<MIFTree<'a>>),
-        TSX((f64, MIFUnit)),
+        TSX(MIFDimension),
         TSType(MIFKeyword<'a>),
         TSLeaderStr(&'a str),
         TSDecimalChar(u64),
@@ -162,13 +166,13 @@ mod parser {
         PgfLanguage(MIFKeyword<'a>),
         PgfTopSeparator(&'a str),
         PgfTopSepAtIndent(bool),
-        PgfTopSepOffset((f64, MIFUnit)),
+        PgfTopSepOffset(MIFDimension),
         PgfBoxColor(MIFKeyword<'a>),
         PgfBotSeparator(&'a str),
         PgfBotSepAtIndent(bool),
-        PgfBotSepOffset((f64, MIFUnit)),
+        PgfBotSepOffset(MIFDimension),
         PgfCellAlignment(MIFKeyword<'a>),
-        PgfCellMargins(((f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit))),
+        PgfCellMargins((MIFDimension, MIFDimension, MIFDimension, MIFDimension)),
         PgfCellLMarginFixed(bool),
         PgfCellTMarginFixed(bool),
         PgfCellRMarginFixed(bool),
@@ -197,7 +201,7 @@ mod parser {
         FPlatformName(&'a str),
         FLanguage(MIFKeyword<'a>),
         FEncoding(&'a str),
-        FSize((f64, MIFUnit)),
+        FSize(MIFDimension),
         FColor(&'a str),
         FSeparation(u64),
         FStretch(f64),
@@ -219,6 +223,49 @@ mod parser {
         FBold(bool),
         FItalic(bool),
         FLocked(bool),
+
+        TextFlow(Vec<MIFTree<'a>>),
+        TFTag(&'a str),
+        TFAutoConnect(bool),
+        FlowDir,
+        TFPostScript(bool),
+        TFFeather(bool),
+        TFSynchronized(bool),
+        TFLineSpacing(MIFDimension),
+        TFMinHangHeight(MIFDimension),
+        TFSideHeads(bool),
+        TFMaxInterLine(MIFDimension),
+        TFMaxInterPgf(MIFDimension),
+        Notes,
+        Para(Vec<MIFTree<'a>>),
+        PgfNumString(&'a str),
+        PgfEndCond(bool),
+        PgfCondFullPgf(bool),
+        // MIFNOTE: undocumented
+        PgfReferenced(bool),
+        ParaLine(Vec<MIFTree<'a>>),
+        ElementBegin,
+        TextRectID(u64),
+        InlineComponent,
+        InlineComponentEnd,
+        SpclHyphenation(bool),
+        Conditional,
+        Unconditional,
+        String(&'a str),
+        Char(MIFKeyword<'a>),
+        ATbl(u64),
+        AFrame(u64),
+        FNote(u64),
+        Marker(Vec<MIFTree<'a>>),
+        MType(u64),
+        MTypeName(&'a str),
+        MText(&'a str),
+        MCurrPage(u64),
+        Variable(Vec<MIFTree<'a>>),
+        VariableName(&'a str),
+        VariableLocked(bool),
+        XRef,
+        ElementEnd,
     }
 
     enum MIFErr {
@@ -408,6 +455,11 @@ mod parser {
             flat_map!($i, tok!(u, Token(u)), do_parse!(x: $( $rest )* >> eof!() >> (x)))
         );
     );
+    macro_rules! strmap (
+        ($i:expr, $( $rest:tt )*) => (
+            flat_map!($i, tok!(u, Str(u)), do_parse!(x: $( $rest )* >> eof!() >> (x)))
+        );
+    );
 
     macro_rules! mynamed (
         ($name:ident<$t:ty>, $submac:ident!( $( $args:tt )* )) => (
@@ -433,6 +485,9 @@ mod parser {
     mynamed!(mif_parse_integer<u64>,
         tokmap!(map_res!(digit, |s| u64::from_str_radix(s, 10)))
     );
+    mynamed!(mif_parse_string_integer<u64>,
+        strmap!(map_res!(digit, |s| u64::from_str_radix(s, 10)))
+    );
     mynamed!(mif_parse_charunit<MIFCharUnit>,
         tokmap!(do_parse!(tag!("CU") >> unit: alt_complete!(
             tag!("pt") => { |_| MIFCharUnit::Points }
@@ -446,7 +501,7 @@ mod parser {
     // TODO: this doesn't currently handle " for inches as it's tokenised as one token
     // TODO: it's not clear whether it's valid to have more than one space between
     // number and unit - because tokenisation happens first, it is permitted
-    mynamed!(mif_parse_num_unit<(f64, MIFUnit)>,
+    mynamed!(mif_parse_num_unit<MIFDimension>,
         pair!(
             mif_parse_decimal,
             tokmap!(alt_complete!(
@@ -529,10 +584,13 @@ mod parser {
         ))
     );
     mynamed!(data_integer<u64>, call!(mif_parse_integer));
+    mynamed!(data_string_integer<u64>, call!(mif_parse_string_integer));
+    // MIFNOTE: "An ID can be any positive integer between 1 and 65535,
+    // inclusive" - you liar
     mynamed!(data_ID<u64>,
-        map_res!(mif_parse_integer, |i| checkrange(i, 1..65535+1))
+        map_res!(mif_parse_integer, |i| checkrange(i, 1..99999999))
     );
-    mynamed!(data_dimension<(f64, MIFUnit)>, call!(mif_parse_num_unit));
+    mynamed!(data_dimension<MIFDimension>, call!(mif_parse_num_unit));
     mynamed!(data_degrees<f64>, call!(mif_parse_decimal));
     //// MIFNOTE: documented as having no units, but actually occasionally has %
     mynamed!(data_percentage<f64>, call!(mif_parse_percentage));
@@ -551,7 +609,7 @@ mod parser {
         // TODO
         call!(fail)
     );
-    mynamed!(data_L_T_R_B<((f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit), (f64, MIFUnit))>,
+    mynamed!(data_L_T_R_B<(MIFDimension, MIFDimension, MIFDimension, MIFDimension)>,
         do_parse!(
             l: mif_parse_num_unit >> t: mif_parse_num_unit >>
             r: mif_parse_num_unit >> b: mif_parse_num_unit >>
@@ -648,6 +706,8 @@ mod parser {
             }
         )
     );
+
+    st!(Unique, (val: data_ID), (val));
 
     fn isfloatstr(s: &str) -> bool { s.bytes().all(|b| b == b'.' || (b >= b'0' && b <= b'9')) }
     st!(MIFFile, (vsn: tok!(f, Token(f) if isfloatstr(f))), (vsn));
@@ -984,6 +1044,119 @@ mod parser {
     st!(FItalic, (val: data_boolean), (val));
     st!(FLocked, (val: data_boolean), (val));
 
+    st!(TextFlow,
+        (props: many0!(alt_complete!(
+            stparse!(TFTag)
+          | stparse!(TFAutoConnect)
+          | stparse!(FlowDir)
+          | stparse!(TFPostScript)
+          | stparse!(TFFeather)
+          | stparse!(TFSynchronized)
+          | stparse!(TFLineSpacing)
+          | stparse!(TFMinHangHeight)
+          | stparse!(TFSideHeads)
+          | stparse!(TFMaxInterLine)
+          | stparse!(TFMaxInterPgf)
+          | stparse!(Notes)
+          | stparse!(Para)
+        ))), (props)
+    );
+    st!(TFTag, (val: data_tagstring), (val));
+    st!(TFAutoConnect, (val: data_boolean), (val));
+    // TODO: validate one of an enum
+    st!(FlowDir, (), ());
+    st!(TFPostScript, (val: data_boolean), (val));
+    st!(TFFeather, (val: data_boolean), (val));
+    st!(TFSynchronized, (val: data_boolean), (val));
+    st!(TFLineSpacing, (val: data_dimension), (val));
+    st!(TFMinHangHeight, (val: data_dimension), (val));
+    st!(TFSideHeads, (val: data_boolean), (val));
+    st!(TFMaxInterLine, (val: data_dimension), (val));
+    st!(TFMaxInterPgf, (val: data_dimension), (val));
+    // TODO
+    st!(Notes, (), ());
+    st!(Para,
+        (props: many0!(alt_complete!(
+            stparse!(Unique)
+          | stparse!(PgfTag)
+          | stparse!(Pgf)
+          | stparse!(PgfNumString)
+          | stparse!(PgfEndCond)
+          | stparse!(PgfCondFullPgf)
+          | stparse!(PgfReferenced)
+          | stparse!(ParaLine)
+        ))), (props)
+    );
+    st!(PgfNumString, (val: data_string), (val));
+    st!(PgfEndCond, (val: data_boolean), (val));
+    st!(PgfCondFullPgf, (val: data_boolean), (val));
+    st!(PgfReferenced, (val: data_boolean), (val));
+    st!(ParaLine,
+        (props: many0!(alt_complete!(
+            stparse!(ElementBegin)
+          | stparse!(TextRectID)
+          | stparse!(InlineComponent)
+          | stparse!(InlineComponentEnd)
+          | stparse!(SpclHyphenation)
+          | stparse!(Font)
+          | stparse!(Conditional)
+          | stparse!(Unconditional)
+          | stparse!(String)
+          | stparse!(Char)
+          | stparse!(ATbl)
+          | stparse!(AFrame)
+          | stparse!(FNote)
+          | stparse!(Marker)
+          | stparse!(Variable)
+          | stparse!(XRef)
+          | stparse!(ElementEnd)
+        ))), (props)
+    );
+    // TODO
+    st!(ElementBegin, (), ());
+    st!(TextRectID, (val: data_ID), (val));
+    // TODO
+    st!(InlineComponent, (), ());
+    st!(InlineComponentEnd, (), ());
+    st!(SpclHyphenation, (val: data_boolean), (val));
+    // TODO
+    st!(Conditional, (), ());
+    st!(Unconditional, (), ());
+    st!(String, (val: data_string), (val));
+    // TODO: transform into actual char
+    st!(Char, (val: mif_parse_keyword), (val));
+    st!(ATbl, (val: data_ID), (val));
+    st!(AFrame, (val: data_ID), (val));
+    st!(FNote, (val: data_ID), (val));
+    st!(Marker,
+        (props: many0!(alt_complete!(
+            stparse!(Unique)
+          | stparse!(MType)
+          | stparse!(MTypeName)
+          | stparse!(MText)
+          | stparse!(MCurrPage)
+        ))), (props)
+    );
+    // TODO: convert to enum
+    st!(MType, (val: data_integer), (val));
+    st!(MTypeName, (val: data_string), (val));
+    st!(MText, (val: data_string), (val));
+    // MIFNOTE: documented as integer, actually in a str
+    st!(MCurrPage, (val: data_string_integer), (val));
+    st!(Variable,
+        (props: many0!(alt_complete!(
+            // MIFNOTE: not documented to appear here
+            stparse!(Unique)
+          | stparse!(VariableName)
+          | stparse!(VariableLocked)
+        ))), (props)
+    );
+    st!(VariableName, (val: data_string), (val));
+    st!(VariableLocked, (val: data_boolean), (val));
+    // TODO
+    st!(XRef, (), ());
+    st!(ElementEnd, (), ());
+
     mynamed!(fullmiffile<Vec<MIFTree<'a>>>,
         many0!(alt_complete!(
             stparse!(MIFFile)
@@ -997,6 +1170,7 @@ mod parser {
           | stparse!(DictionaryPreferences)
           | stparse!(CombinedFontCatalog)
           | stparse!(PgfCatalog)
+          | stparse!(TextFlow)
           | unknown_miftree
         ))
     );
