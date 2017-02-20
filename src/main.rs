@@ -63,8 +63,12 @@ mod parser {
     #[derive(Debug)]
     enum MIFTree<'a> {
         _Unknown(&'a str),
+        _InsetData(&'a str),
 
+        // across a few different elts
         Unique(u64),
+        String(&'a str),
+        Char(MIFKeyword<'a>),
 
         MIFFile(&'a str),
         // MIFNOTE: undocumented
@@ -251,8 +255,6 @@ mod parser {
         SpclHyphenation(bool),
         Conditional,
         Unconditional,
-        String(&'a str),
-        Char(MIFKeyword<'a>),
         ATbl(u64),
         AFrame(u64),
         FNote(u64),
@@ -266,6 +268,101 @@ mod parser {
         VariableLocked(bool),
         XRef,
         ElementEnd,
+
+        Page(Vec<MIFTree<'a>>),
+        PageType(MIFKeyword<'a>),
+        PageNum(&'a str),
+        PageTag(&'a str),
+        PageSize((MIFDimension, MIFDimension)),
+        PageAngle(f64),
+        // MIFNOTE: exists for backwards compatibility
+        PageOrientation(MIFKeyword<'a>),
+        PageBackground(&'a str),
+
+        // generic object stuff
+        ID(u64),
+        GroupID(u64),
+        Pen(u64),
+        Fill(u64),
+        PenWidth(MIFDimension),
+        ObColor(&'a str),
+        ObTint(f64),
+        Separation(u64),
+        Overprint(bool),
+        RunaroundType(MIFKeyword<'a>),
+        RunaroundGap(MIFDimension),
+        Angle(f64),
+        ReRotateAngle(MIFDimension),
+        DashedPattern(Vec<MIFTree<'a>>),
+        DashedStyle(MIFKeyword<'a>),
+        NumSegments(u64),
+        DashSegment(MIFDimension),
+        ObjectAttribute(Vec<MIFTree<'a>>),
+        Tag(&'a str),
+        Value(&'a str),
+        // commonish
+        Smoothed(bool),
+        ShapeRect((MIFDimension, MIFDimension, MIFDimension, MIFDimension)),
+        // MIFNOTE: exists for backwards compatibility
+        BRect((MIFDimension, MIFDimension, MIFDimension, MIFDimension)),
+
+        // objects
+        Frame(Vec<MIFTree<'a>>), //
+        IsHotspot(bool),
+        HotspotCmdStr(&'a str),
+        HotspotTitle(&'a str),
+        FrameType(MIFKeyword<'a>),
+        AnchorDirection(MIFKeyword<'a>),
+        Float(bool),
+        NSOffset(MIFDimension),
+        BLOffset(MIFDimension),
+        AnchorAlign(MIFKeyword<'a>),
+        AnchorBeside(MIFKeyword<'a>),
+        Cropped(bool),
+        ImportObject(Vec<MIFTree<'a>>), //
+        ImportObFile(&'a str),
+        ImportObFileDI(&'a str),
+        ImportHint(&'a str),
+        PosterFileDI(&'a str),
+        BitMapDpi(u64),
+        ImportObFixedSize(bool),
+        FlipLR(bool),
+        ImportObNameDI(&'a str),
+        ObjectActivateInPDF(bool),
+        ObjectOpenInFloatWindow(bool),
+        ObjectSupportMMLink(bool),
+        NativeOrigin((MIFDimension, MIFDimension)),
+        ImportObEditor(&'a str),
+        ImportObUpdater(&'a str),
+        ImportURL(&'a str),
+        ObjectInfo(&'a str),
+
+        PolyLine(Vec<MIFTree<'a>>), //
+        HeadCap(MIFKeyword<'a>),
+        TailCap(MIFKeyword<'a>),
+        ArrowStyle(Vec<MIFTree<'a>>),
+        TipAngle(u64),
+        BaseAngle(u64),
+        Length(MIFDimension),
+        HeadType(MIFKeyword<'a>),
+        ScaleHead(bool),
+        ScaleFactor(MIFDimension),
+        NumPoints(u64),
+        Point((MIFDimension, MIFDimension)),
+        Rectangle(Vec<MIFTree<'a>>), //
+        TextLine(Vec<MIFTree<'a>>), //
+        TLOrigin((MIFDimension, MIFDimension)),
+        TLAlignment(MIFKeyword<'a>),
+        TLDirection(MIFKeyword<'a>),
+        TLLanguage(MIFKeyword<'a>),
+        TextRect(Vec<MIFTree<'a>>), //
+        TRNext(u64),
+        TRNumColumns(u64),
+        TRColumnGap(MIFDimension),
+        TRColumnBalance(bool),
+        TRSideheadWidth(MIFDimension),
+        TRSideheadGap(MIFDimension),
+        TRSideheadPlacement(MIFKeyword<'a>),
     }
 
     enum MIFErr {
@@ -565,10 +662,15 @@ mod parser {
         ))
     );
 
+    mynamed!(mif_parse_inset<MIFTree<'a>>,
+        tok!(MIFTree::_InsetData(content), Inset { ty: _, content })
+    );
+
     // TODO: should eventually disappear, see note on MIFKeyword
     fn is_keyword_char(c: char) -> bool {
         c.is_ascii() && (c.is_alphanumeric() || c == '.' || c == '-')
     }
+    // TODO: does this just leave any trailing chars?
     mynamed!(mif_parse_keyword<MIFKeyword<'a>>,
         tokmap!(do_parse!(x: take_while1!(is_keyword_char) >> (MIFKeyword(x))))
     );
@@ -599,15 +701,17 @@ mod parser {
         // TODO
         call!(fail)
     );
-    // TODO: don't just return the untransformed value
-    mynamed!(data_W_H<&'a str>,
-        // TODO
-        call!(fail)
+    mynamed!(data_W_H<(MIFDimension, MIFDimension)>,
+        do_parse!(
+            w: mif_parse_num_unit >> h: mif_parse_num_unit >>
+            (w, h)
+        )
     );
-    // TODO: don't just return the untransformed value
-    mynamed!(data_X_Y<&'a str>,
-        // TODO
-        call!(fail)
+    mynamed!(data_X_Y<(MIFDimension, MIFDimension)>,
+        do_parse!(
+            x: mif_parse_num_unit >> y: mif_parse_num_unit >>
+            (x, y)
+        )
     );
     mynamed!(data_L_T_R_B<(MIFDimension, MIFDimension, MIFDimension, MIFDimension)>,
         do_parse!(
@@ -616,10 +720,12 @@ mod parser {
             (l, t, r, b)
         )
     );
-    // TODO: don't just return the untransformed value
-    mynamed!(data_L_T_W_H<&'a str>,
-        // TODO
-        call!(fail)
+    mynamed!(data_L_T_W_H<(MIFDimension, MIFDimension, MIFDimension, MIFDimension)>,
+        do_parse!(
+            l: mif_parse_num_unit >> t: mif_parse_num_unit >>
+            w: mif_parse_num_unit >> h: mif_parse_num_unit >>
+            (l, t, w, h)
+        )
     );
     // TODO: don't just return the untransformed value
     mynamed!(data_X_Y_W_H<&'a str>,
@@ -1157,6 +1263,257 @@ mod parser {
     st!(XRef, (), ());
     st!(ElementEnd, (), ());
 
+    // Common stuff across object statements
+    macro_rules! generic_object_statements (
+        ($i:expr,) => {
+            alt_complete!($i,
+                stparse!(ID)
+              | stparse!(GroupID)
+              | stparse!(Unique)
+              | stparse!(Pen)
+              | stparse!(Fill)
+              | stparse!(PenWidth)
+              | stparse!(ObColor)
+              | stparse!(ObTint)
+              | stparse!(Separation)
+              | stparse!(Overprint)
+              | stparse!(RunaroundType)
+              | stparse!(RunaroundGap)
+              | stparse!(Angle)
+              | stparse!(ReRotateAngle)
+              | stparse!(DashedPattern)
+              | stparse!(ObjectAttribute)
+            )
+        };
+    );
+    st!(ID, (val: data_ID), (val));
+    st!(GroupID, (val: data_ID), (val));
+    st!(Pen, (val: data_integer), (val));
+    st!(Fill, (val: data_integer), (val));
+    st!(PenWidth, (val: data_dimension), (val));
+    st!(ObColor, (val: data_tagstring), (val));
+    st!(ObTint, (val: data_percentage), (val));
+    st!(Separation, (val: data_integer), (val));
+    st!(Overprint, (val: data_boolean), (val));
+    // TODO: validate enum
+    st!(RunaroundType, (val: mif_parse_keyword), (val));
+    st!(RunaroundGap, (val: data_dimension), (val));
+    st!(Angle, (val: data_degrees), (val));
+    st!(ReRotateAngle, (val: data_dimension), (val));
+    st!(DashedPattern,
+        (props: many0!(alt_complete!(
+            stparse!(DashedStyle)
+          | stparse!(NumSegments)
+          | stparse!(DashSegment)
+        ))), (props)
+    );
+    st!(DashedStyle, (val: mif_parse_keyword), (val));
+    st!(NumSegments, (val: data_integer), (val));
+    st!(DashSegment, (val: data_dimension), (val));
+    st!(ObjectAttribute,
+        (props: many0!(alt_complete!(
+            stparse!(Tag)
+          | stparse!(Value)
+        ))), (props)
+    );
+    st!(Tag, (val: data_string), (val));
+    st!(Value, (val: data_string), (val));
+    // MIFNOTE: although these seem to be shared across a few different
+    // objects, they're not actually listed in the table of generic statements
+    st!(ShapeRect, (val: data_L_T_W_H), (val));
+    st!(BRect, (val: data_L_T_W_H), (val));
+    st!(Smoothed, (val: data_boolean), (val));
+
+    // The graphical objects
+    macro_rules! all_objects (
+        ($i:expr,) => {
+            alt_complete!($i,
+                stparse!(Frame)
+              | stparse!(ImportObject)
+              | stparse!(PolyLine)
+              | stparse!(Rectangle)
+              | stparse!(TextLine)
+              | stparse!(TextRect)
+            )
+        };
+    );
+    st!(Frame,
+        (props: many0!(alt_complete!(
+            generic_object_statements!()
+          | stparse!(IsHotspot)
+          | stparse!(HotspotCmdStr)
+          | stparse!(HotspotTitle)
+          | stparse!(ShapeRect)
+          | stparse!(BRect)
+          | stparse!(FrameType)
+          | stparse!(AnchorDirection)
+          // TODO: this is actually a tagstring, but we're reusing 'tag' (a
+          // string) from the generic object attributes because of conflicting
+          // names
+          | stparse!(Tag)
+          | stparse!(Float)
+          | stparse!(NSOffset)
+          | stparse!(BLOffset)
+          | stparse!(AnchorAlign)
+          | stparse!(AnchorBeside)
+          | stparse!(Cropped)
+          | all_objects!()
+        ))), (props)
+    );
+    st!(IsHotspot, (val: data_boolean), (val));
+    st!(HotspotCmdStr, (val: data_string), (val));
+    st!(HotspotTitle, (val: data_string), (val));
+    st!(FrameType, (val: mif_parse_keyword), (val));
+    st!(AnchorDirection, (val: mif_parse_keyword), (val));
+    st!(Float, (val: data_boolean), (val));
+    st!(NSOffset, (val: data_dimension), (val));
+    st!(BLOffset, (val: data_dimension), (val));
+    st!(AnchorAlign, (val: mif_parse_keyword), (val));
+    st!(AnchorBeside, (val: mif_parse_keyword), (val));
+    st!(Cropped, (val: data_boolean), (val));
+    st!(ImportObject,
+        (props: many0!(alt_complete!(
+            generic_object_statements!()
+          | call!(mif_parse_inset)
+          | stparse!(ImportObFile)
+          | stparse!(ImportObFileDI)
+          | stparse!(ImportHint)
+          | stparse!(PosterFileDI)
+          | stparse!(ShapeRect)
+          | stparse!(BRect)
+          | stparse!(BitMapDpi)
+          | stparse!(ImportObFixedSize)
+          | stparse!(FlipLR)
+          | stparse!(ImportObNameDI)
+          | stparse!(ObjectActivateInPDF)
+          | stparse!(ObjectOpenInFloatWindow)
+          | stparse!(ObjectSupportMMLink)
+          | stparse!(NativeOrigin)
+          | stparse!(ImportObEditor)
+          | stparse!(ImportObUpdater)
+          | stparse!(ImportURL)
+          | stparse!(ObjectInfo)
+        ))), (props)
+    );
+    st!(ImportObFile, (val: data_path), (val));
+    st!(ImportObFileDI, (val: data_path), (val));
+    st!(ImportHint, (val: data_string), (val));
+    st!(PosterFileDI, (val: data_path), (val));
+    st!(BitMapDpi, (val: data_integer), (val));
+    st!(ImportObFixedSize, (val: data_boolean), (val));
+    st!(FlipLR, (val: data_boolean), (val));
+    st!(ImportObNameDI, (val: data_path), (val));
+    st!(ObjectActivateInPDF, (val: data_boolean), (val));
+    st!(ObjectOpenInFloatWindow, (val: data_boolean), (val));
+    st!(ObjectSupportMMLink, (val: data_boolean), (val));
+    st!(NativeOrigin, (val: data_X_Y), (val));
+    st!(ImportObEditor, (val: data_string), (val));
+    st!(ImportObUpdater, (val: data_string), (val));
+    st!(ImportURL, (val: data_string), (val));
+    st!(ObjectInfo, (val: data_string), (val));
+    st!(PolyLine,
+        (props: many0!(alt_complete!(
+            generic_object_statements!()
+          | stparse!(HeadCap)
+          | stparse!(TailCap)
+          | stparse!(ArrowStyle)
+          | stparse!(Smoothed)
+          | stparse!(NumPoints)
+          | stparse!(Point)
+        ))), (props)
+    );
+    st!(HeadCap, (val: mif_parse_keyword), (val));
+    st!(TailCap, (val: mif_parse_keyword), (val));
+    st!(ArrowStyle,
+        (props: many0!(alt_complete!(
+            stparse!(TipAngle)
+          | stparse!(BaseAngle)
+          | stparse!(Length)
+          | stparse!(HeadType)
+          | stparse!(ScaleHead)
+          | stparse!(ScaleFactor)
+        ))), (props)
+    );
+    st!(TipAngle, (val: data_integer), (val));
+    st!(BaseAngle, (val: data_integer), (val));
+    st!(Length, (val: data_dimension), (val));
+    st!(HeadType, (val: mif_parse_keyword), (val));
+    st!(ScaleHead, (val: data_boolean), (val));
+    st!(ScaleFactor, (val: data_dimension), (val));
+    st!(NumPoints, (val: data_integer), (val));
+    st!(Point, (val: data_X_Y), (val));
+    st!(Rectangle,
+        (props: many0!(alt_complete!(
+            generic_object_statements!()
+          | stparse!(ShapeRect)
+          | stparse!(BRect)
+          | stparse!(Smoothed)
+        ))), (props)
+    );
+    st!(TextRect,
+        (props: many0!(alt_complete!(
+            generic_object_statements!()
+          | stparse!(ShapeRect)
+          | stparse!(BRect)
+          | stparse!(TRNext)
+          | stparse!(TRNumColumns)
+          | stparse!(TRColumnGap)
+          | stparse!(TRColumnBalance)
+          | stparse!(TRSideheadWidth)
+          | stparse!(TRSideheadGap)
+          | stparse!(TRSideheadPlacement)
+          | stparse!(TextFlow)
+        ))), (props)
+    );
+    st!(TRNext, (val: data_integer), (val));
+    st!(TRNumColumns, (val: data_integer), (val));
+    st!(TRColumnGap, (val: data_dimension), (val));
+    st!(TRColumnBalance, (val: data_boolean), (val));
+    st!(TRSideheadWidth, (val: data_dimension), (val));
+    st!(TRSideheadGap, (val: data_dimension), (val));
+    // TODO: validate enum
+    st!(TRSideheadPlacement, (val: mif_parse_keyword), (val));
+    st!(TextLine,
+        (props: many0!(alt_complete!(
+            generic_object_statements!()
+          | stparse!(TLOrigin)
+          | stparse!(TLAlignment)
+          | stparse!(TLDirection)
+          | stparse!(TLLanguage)
+          | stparse!(Char)
+          | stparse!(Font)
+          | stparse!(String)
+        ))), (props)
+    );
+    st!(TLOrigin, (val: data_X_Y), (val));
+    st!(TLAlignment, (val: mif_parse_keyword), (val));
+    st!(TLDirection, (val: mif_parse_keyword), (val));
+    st!(TLLanguage, (val: mif_parse_keyword), (val));
+
+    st!(Page,
+        (props: many0!(alt_complete!(
+            // MIFNOTE: undocumented
+            stparse!(Unique)
+          | stparse!(PageType)
+          | stparse!(PageNum)
+          | stparse!(PageTag)
+          | stparse!(PageSize)
+          | stparse!(PageAngle)
+          | stparse!(PageOrientation)
+          | stparse!(PageBackground)
+          | all_objects!()
+          // TODO: filter statements?
+        ))), (props)
+    );
+    st!(PageType, (val: mif_parse_keyword), (val));
+    st!(PageNum, (val: data_string), (val));
+    st!(PageTag, (val: data_tagstring), (val));
+    st!(PageSize, (val: data_W_H), (val));
+    st!(PageAngle, (val: data_degrees), (val));
+    st!(PageOrientation, (val: mif_parse_keyword), (val));
+    // MIFNOTE: documented as a keyword, actually a string
+    st!(PageBackground, (val: data_string), (val));
+
     mynamed!(fullmiffile<Vec<MIFTree<'a>>>,
         many0!(alt_complete!(
             stparse!(MIFFile)
@@ -1171,6 +1528,7 @@ mod parser {
           | stparse!(CombinedFontCatalog)
           | stparse!(PgfCatalog)
           | stparse!(TextFlow)
+          | stparse!(Page)
           | unknown_miftree
         ))
     );
