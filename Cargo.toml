@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Aidan Hobson Sayers <aidanhs@cantab.net>"]
 
 [dependencies]
-interpolate_idents = "0.1.3"
+interpolate_idents = "0.1.4"
 nom = { version = "^2.0", features = ["verbose-errors", "nightly", "regexp", "regexp_macros"] }
 regex = "0.1"
 combine = "2.1"
