@@ -22,7 +22,7 @@ fn main() {
 fn mif2asciidoc() {
     let mut mifvec = vec![];
     //File::open(MIF).unwrap().read_to_end(&mut mifvec).unwrap();
-    File::open("z.mif").unwrap().read_to_end(&mut mifvec).unwrap();
+    File::open("x.mif").unwrap().read_to_end(&mut mifvec).unwrap();
     mifvec.retain(|&b| b != b'\r');
     mifvec.push(b'\n');
 
@@ -60,6 +60,8 @@ mod parser {
 
     #[derive(Debug)]
     enum MIFTree<'a> {
+        _Unknown(&'a str),
+
         MIFFile(&'a str),
         // MIFNOTE: undocumented
         Units(&'a str),
@@ -376,6 +378,7 @@ mod parser {
 
     // Ouch - without this, a trailing optional in a do_parse will make the
     // whole do_parse incomplete, which then errors
+    // https://github.com/Geal/nom/issues/406
     macro_rules! optional (
         ($i:expr, $( $rest:tt )*) => (opt!($i, complete!($( $rest )*)));
     );
@@ -566,6 +569,29 @@ mod parser {
         call!(fail)
     );
 
+    fn unknown_miftree<'a, 'b>(input: &'b [MIFToken<'a>]) -> IResult<&'b [MIFToken<'a>], MIFTree<'a>, u32> {
+        use nom::IResult::{Done, Error};
+        use nom::{InputLength, Slice};
+        use self::MIFToken::{StartStatement, EndStatement, Token};
+        let input_length = input.input_len();
+        if input_length < 3 {
+            return Error(error_position!(ErrorKind::Custom(3378), input))
+        }
+        let tree = MIFTree::_Unknown(match (input[0], input[1]) {
+            (StartStatement, Token(name)) => name,
+            _ => return Error(error_position!(ErrorKind::Custom(4378), input))
+        });
+        let mut depth = 0;
+        for (idx, item) in input.iter().enumerate() {
+            match *item {
+                StartStatement => depth += 1,
+                EndStatement if depth > 1 => depth -= 1,
+                EndStatement => return Done(input.slice(idx+1..), tree),
+                _ => (),
+            }
+        }
+        Error(error_position!(ErrorKind::Custom(5378), input))
+    }
     macro_rules! __st_check (
         ($name:ident) => (
             interpolate_idents! {
@@ -971,6 +997,7 @@ mod parser {
           | stparse!(DictionaryPreferences)
           | stparse!(CombinedFontCatalog)
           | stparse!(PgfCatalog)
+          | unknown_miftree
         ))
     );
 }
