@@ -12,8 +12,6 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::str;
 
-const MIF: &'static str = "/media/aidanhs/OS/Users/aidanhs/Desktop/ch01__.mif";
-const FM: &'static str =  "/media/aidanhs/OS/Users/aidanhs/Desktop/ch01__.fm";
 
 fn main() {
     mif2asciidoc()
@@ -21,7 +19,6 @@ fn main() {
 
 fn mif2asciidoc() {
     let mut mifvec = vec![];
-    //File::open(MIF).unwrap().read_to_end(&mut mifvec).unwrap();
     File::open("x.mif").unwrap().read_to_end(&mut mifvec).unwrap();
     mifvec.retain(|&b| b != b'\r');
     mifvec.push(b'\n');
@@ -1533,64 +1530,6 @@ mod parser {
         ))
     );
 }
-
-// Attempt at a handwritten parser for the text format
-//fn isspace(b: u8) -> bool {
-//    b == b' ' || b == b'\n' || b == b'\r'
-//}
-//fn isrefspace(&b: &u8) -> bool { isspace(b) }
-//
-//fn chompspaces(s: &[u8]) -> &[u8] {
-//    let pos = s.iter().position(|&b| !isspace(b)).unwrap_or_else(|| s.len());
-//    &s[pos..]
-//}
-//
-//fn parse(mut s: &[u8]) -> (&[u8], Vec<MifTree>) {
-//    let mut acc = vec![];
-//    loop {
-//        println!("{:?}", str::from_utf8(&s[..15]).unwrap());
-//        s = chompspaces(s);
-//        match s.first() {
-//            Some(&b'<') => s = &s[1..],
-//            Some(&b'>') |
-//            None => break,
-//            Some(&b'#') => {
-//                let newline = s.iter().position(|&b| b == b'\n').unwrap();
-//                s = &s[newline+1..];
-//                continue
-//            },
-//            Some(&b) => {
-//                println!("Unknown byte {} ({:?})", b, char::from(b));
-//                panic!()
-//            },
-//        }
-//        s = chompspaces(s);
-//            let tagend = s.iter().position(isrefspace).unwrap();
-//        assert!(tagend > 0);
-//            let tag = String::from_utf8(s[..tagend].to_owned()).unwrap();
-//            s = &s[tagend..];
-//        s = chompspaces(s);
-//        loop {
-//            let miftree = if s[0] == b'<' {
-//                let (news, subtree) = parse(s);
-//                s = news;
-//                MifTree::Parent(tag, subtree)
-//            } else {
-//                let mut pos = 0;
-//                while s[pos] != b'>' {
-//                    assert!(s[pos] != b'<');
-//                    pos += 1
-//                }
-//                let miftree = MifTree::Leaf(tag, s[..pos].to_owned());
-//                s = &s[pos..];
-//                miftree
-//            };
-//        }
-//        assert!(s[0] == b'>');
-//        s = &s[1..];
-//    }
-//    (s, acc)
-//}
 
 // Attempt to understand the binary format
 //extern crate regex;
