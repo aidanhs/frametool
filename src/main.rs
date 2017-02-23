@@ -65,7 +65,7 @@ mod parser {
         // across a few different elts
         Unique(u64),
         String(&'a str),
-        Char(MIFKeyword<'a>),
+        Char(MIFChar),
 
         MIFFile(&'a str),
         // MIFNOTE: undocumented
@@ -94,6 +94,8 @@ mod parser {
         CColor(&'a str),
         CSeparation(u64),
         CBackgroundColor(&'a str),
+        // MIFNOTE: undocumented, possibly a framemaker 8 remnant
+        CAndCondition,
 
         BoolCondCatalog(Vec<MIFTree<'a>>),
         BoolCond(Vec<MIFTree<'a>>),
@@ -378,6 +380,15 @@ mod parser {
     }
 
     #[derive(Debug)]
+    enum MIFChar {
+        EmSpace,
+        EnSpace,
+        HardSpace,
+        SoftHyphen,
+        Tab,
+    }
+
+    #[derive(Debug)]
     enum MIFCharUnit {
         Points,
         Q,
@@ -581,6 +592,16 @@ mod parser {
     );
     mynamed!(mif_parse_string_integer<u64>,
         strmap!(map_res!(digit, |s| u64::from_str_radix(s, 10)))
+    );
+    mynamed!(mif_parse_char<MIFChar>,
+        tokmap!(alt_complete!(
+            tag!("EmSpace") => { |_| MIFChar::EmSpace }
+          | tag!("EnSpace") => { |_| MIFChar::EnSpace }
+          | tag!("HardSpace") => { |_| MIFChar::HardSpace }
+          | tag!("SoftHyphen") => { |_| MIFChar::SoftHyphen }
+          | tag!("Tab") => { |_| MIFChar::Tab }
+          //| tag!("") => { |_| MIFChar:: }
+        ))
     );
     mynamed!(mif_parse_charunit<MIFCharUnit>,
         tokmap!(do_parse!(tag!("CU") >> unit: alt_complete!(
@@ -855,6 +876,7 @@ mod parser {
           | stparse!(CColor)
           | stparse!(CSeparation)
           | stparse!(CBackgroundColor)
+          | stparse!(CAndCondition)
         ))),
         (props)
     );
@@ -864,6 +886,7 @@ mod parser {
     st!(CColor, (tag: data_tagstring), (tag));
     st!(CSeparation, (sep: data_integer), (sep));
     st!(CBackgroundColor, (tag: data_tagstring), (tag));
+    st!(CAndCondition, (), ());
 
     st!(BoolCondCatalog, (conds: many0!(stparse!(BoolCond))), (conds));
     st!(BoolCond,
@@ -1227,7 +1250,7 @@ mod parser {
     st!(Unconditional, (), ());
     st!(String, (val: data_string), (val));
     // TODO: transform into actual char
-    st!(Char, (val: mif_parse_keyword), (val));
+    st!(Char, (val: mif_parse_char), (val));
     st!(ATbl, (val: data_ID), (val));
     st!(AFrame, (val: data_ID), (val));
     st!(FNote, (val: data_ID), (val));
