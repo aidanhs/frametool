@@ -7,32 +7,128 @@ extern crate combine;
 #[macro_use]
 extern crate nom;
 
+use std::borrow::Cow;
 use std::cmp;
+use std::env;
 use std::fs::File;
 use std::io::prelude::*;
 use std::str;
 
+use parser::MIFTree;
+use parser::MIFChar;
 
 fn main() {
     mif2asciidoc()
 }
 
+#[derive(Debug)]
+struct TextFlow<'a> {
+    paras: Vec<Para<'a>>,
+}
+#[derive(Debug)]
+struct Para<'a> {
+    lines: Vec<Vec<LinePart<'a>>>,
+}
+#[derive(Debug)]
+enum LinePart<'a> {
+    Str(u64, &'a str), // trid, str
+    Char(u64, MIFChar), // trid, char
+}
+
 fn mif2asciidoc() {
+    let miffile = env::args().skip(1).next().expect("Expected one arg: file.mif");
+
     let mut mifvec = vec![];
-    File::open("x.mif").unwrap().read_to_end(&mut mifvec).unwrap();
+    File::open(miffile).unwrap().read_to_end(&mut mifvec).unwrap();
     mifvec.retain(|&b| b != b'\r');
     mifvec.push(b'\n');
 
     //let mifstr = str::from_utf8(&mifvec).unwrap();
     let miftokens = lex::lex(&mifvec);
-    parser::parse(&miftokens);
+    let tree = parser::parse(&miftokens);
+
+    //println!("DONE: {:?}\n\n\nunparsed:{:?}", miftree, unparsed);
+
+    fn gettextflow<'a, 'b>(e: &'b MIFTree<'a>) -> Option<&'b [MIFTree<'a>]> {
+        if let MIFTree::TextFlow(ref es) = *e { Some(es) } else { None }
+    }
+    fn getpara<'a, 'b>(e: &'b MIFTree<'a>) -> Option<&'b [MIFTree<'a>]> {
+        if let MIFTree::Para(ref es) = *e { Some(es) } else { None }
+    }
+    fn getparaline<'a, 'b>(e: &'b MIFTree<'a>) -> Option<&'b [MIFTree<'a>]> {
+        if let MIFTree::ParaLine(ref es) = *e { Some(es) } else { None }
+    }
+    fn gettextrectid<'a, 'b>(e: &'b MIFTree<'a>) -> Option<u64> {
+        if let MIFTree::TextRectID(id) = *e { Some(id) } else { None }
+    }
+    let mut textflows = vec![];
+    for elts in tree.iter().filter_map(gettextflow) {
+        let mut curtextrectid = None;
+        let mut paras = vec![];
+        for elts in elts.iter().filter_map(getpara) {
+            let mut lines = vec![];
+            for elts in elts.iter().filter_map(getparaline) {
+                let trids: Vec<_> = elts.iter()
+                    .filter_map(gettextrectid).collect();
+                match trids.len() {
+                    0 => (),
+                    1 => {
+                        // Dunno what to do with a textrectid if it's not
+                        // at the beginning of a paraline
+                        assert!(gettextrectid(&elts[0]).is_some());
+                        curtextrectid = Some(trids[0])
+                    }
+                    v => panic!("trids {:?} with {:?}", trids, v),
+                }
+                let mut lineparts = vec![];
+                let trid = curtextrectid.unwrap();
+                for elt in elts.iter() {
+                    lineparts.push(match *elt {
+                        MIFTree::String(s) => LinePart::Str(trid, s),
+                        MIFTree::Char(c) => LinePart::Char(trid, c),
+                        _ => continue,
+                    })
+                }
+                if lineparts.len() > 0 {
+                    lines.push(lineparts)
+                }
+            }
+            // might just have a var or tag etc
+            if lines.len() > 0 {
+                let para = Para { lines };
+                paras.push(para)
+            }
+        }
+        if paras.len() > 0 {
+            let textflow = TextFlow { paras };
+            textflows.push(textflow)
+        }
+    }
+    // Textflows aren't guaranteed to be in order, we should really use TextRect
+    // objects (inside Page/Frame as an object), but it's close enough for our
+    // purposes
+    for textflow in textflows.iter() {
+        for para in textflow.paras.iter() {
+            for paraline in para.lines.iter() {
+                let mut paralinestr = String::new();
+                for paralinepart in paraline {
+                    match *paralinepart {
+                        LinePart::Str(_, s) => paralinestr.push_str(s),
+                        LinePart::Char(_, c) => paralinestr.push(c.as_char()),
+                    }
+                }
+                println!("{}", paralinestr);
+            }
+        }
+        println!("\n=======================\n");
+    }
 }
 
 fn briefer_slice<T>(sl: &[T]) -> &[T] {
     &sl[..cmp::min(sl.len(), 100)]
 }
-fn briefer_utf8(bs: &[u8]) -> &str {
-    &str::from_utf8(briefer_slice(bs)).unwrap()
+fn briefer_utf8(bs: &[u8]) -> Cow<str> {
+    String::from_utf8_lossy(briefer_slice(bs))
 }
 
 mod lex;
@@ -58,7 +154,7 @@ mod parser {
     type MIFDimension = (f64, MIFUnit);
 
     #[derive(Debug)]
-    enum MIFTree<'a> {
+    pub enum MIFTree<'a> {
         _Unknown(&'a str),
         _InsetData(&'a str),
 
@@ -368,8 +464,8 @@ mod parser {
         OutOfRangeError,
     }
 
-    #[derive(Debug)]
-    enum MIFUnit {
+    #[derive(Copy, Clone, Debug)]
+    pub enum MIFUnit {
         Centimeters,
         Ciceros,
         Didots,
@@ -379,23 +475,35 @@ mod parser {
         Points,
     }
 
-    #[derive(Debug)]
-    enum MIFChar {
+    #[derive(Copy, Clone, Debug)]
+    pub enum MIFChar {
         EmSpace,
         EnSpace,
         HardSpace,
         SoftHyphen,
         Tab,
     }
+    impl MIFChar {
+        pub fn as_char(&self) -> char {
+            use MIFChar::*;
+            match *self {
+                EmSpace => ' ',
+                EnSpace => ' ',
+                HardSpace => ' ',
+                SoftHyphen => '-',
+                Tab => '\t',
+            }
+        }
+    }
 
-    #[derive(Debug)]
-    enum MIFCharUnit {
+    #[derive(Copy, Clone, Debug)]
+    pub enum MIFCharUnit {
         Points,
         Q,
     }
 
-    #[derive(Debug)]
-    enum MIFColorAttributeKeyword {
+    #[derive(Copy, Clone, Debug)]
+    pub enum MIFColorAttributeKeyword {
         ColorIsBlack,
         ColorIsWhite,
         ColorIsRed,
@@ -417,14 +525,14 @@ mod parser {
         ColorIsDarkYellow,
     }
 
-    #[derive(Debug)]
-    enum MIFCStateKeyword {
+    #[derive(Copy, Clone, Debug)]
+    pub enum MIFCStateKeyword {
         CHidden,
         CShown,
     }
 
-    #[derive(Debug)]
-    enum MIFCStyleKeyword {
+    #[derive(Copy, Clone, Debug)]
+    pub enum MIFCStyleKeyword {
         CAsIs,
         CUnderline,
         CDoubleUnderline,
@@ -434,21 +542,26 @@ mod parser {
     }
 
     // TODO: probably incomplete
-    #[derive(Debug)]
-    enum MIFDiLanguage {
+    #[derive(Copy, Clone, Debug)]
+    pub enum MIFDiLanguage {
         USEnglish,
         UKEnglish,
     }
 
     // TODO: placeholder so I don't have to specify all possible values
     // everywhere up-front - eventually this should be removed
-    #[derive(Debug)]
-    struct MIFKeyword<'a>(&'a str);
+    #[derive(Copy, Clone, Debug)]
+    pub struct MIFKeyword<'a>(pub &'a str);
 
-    pub fn parse(tokens: &[MIFToken]) {
+    pub fn parse<'a>(tokens: &[MIFToken<'a>]) -> Vec<MIFTree<'a>> {
         match fullmiffile(tokens) {
             IResult::Done(unparsed, miftree) => {
-                println!("DONE: {:?}\n\n\nunparsed:{:?}", miftree, unparsed);
+                if unparsed.len() != 0 {
+                    println!("UNPARSED:\n");
+                    println!("{:?}", unparsed);
+                    panic!("unparsed");
+                }
+                miftree
             },
             IResult::Error(e) => {
                 println!("ERROR:\n");
@@ -473,9 +586,11 @@ mod parser {
                         },
                     }
                 }
+                panic!("error")
             },
             IResult::Incomplete(needed) => {
-                println!("NEEDED: {:?}", needed)
+                println!("NEEDED: {:?}", needed);
+                panic!("incomplete")
             },
         }
     }
