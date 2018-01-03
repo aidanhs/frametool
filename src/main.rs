@@ -479,9 +479,12 @@ mod parser {
     pub enum MIFChar {
         EmSpace,
         EnSpace,
+        ThinSpace,
         HardSpace,
         SoftHyphen,
+        DiscHyphen,
         Tab,
+        HardReturn,
     }
     impl MIFChar {
         pub fn as_char(&self) -> char {
@@ -489,9 +492,12 @@ mod parser {
             match *self {
                 EmSpace => ' ',
                 EnSpace => ' ',
+                ThinSpace => ' ',
                 HardSpace => ' ',
                 SoftHyphen => '-',
+                DiscHyphen => '-', // TODO: 'discretionary' hyphen, so remove
                 Tab => '\t',
+                HardReturn => '\n',
             }
         }
     }
@@ -712,9 +718,12 @@ mod parser {
         tokmap!(alt_complete!(
             tag!("EmSpace") => { |_| MIFChar::EmSpace }
           | tag!("EnSpace") => { |_| MIFChar::EnSpace }
+          | tag!("ThinSpace") => { |_| MIFChar::ThinSpace }
           | tag!("HardSpace") => { |_| MIFChar::HardSpace }
           | tag!("SoftHyphen") => { |_| MIFChar::SoftHyphen }
+          | tag!("DiscHyphen") => { |_| MIFChar::DiscHyphen }
           | tag!("Tab") => { |_| MIFChar::Tab }
+          | tag!("HardReturn") => { |_| MIFChar::HardReturn }
           //| tag!("") => { |_| MIFChar:: }
         ))
     );
