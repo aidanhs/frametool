@@ -1,0 +1,813 @@
+List of Processing Instructions(PI)
+
+=======================
+
+ 
+      Understanding Docker—
+inside the engine room
+Grasping Docker’s architecture is key to understanding Docker more fully. In this 
+chapter you’ll get an overview of Docker’s major components on your machine and on 
+the network, and you’ll learn some techniques that will develop this understanding.
+In the process, you’ll learn some nifty tricks that will help you use Docker (and Linux) 
+more effectively. Many of the later and more advanced techniques will be based on what 
+you see here, so pay special attention to what follows.
+Docker’s architecture
+Figure 2.1 lays out Docker’s architecture, and that will be the centrepiece of this chapter. 
+We’re going to start with a high-level look and then focus on each part with techniques 
+designed to cement your understanding.
+Docker on your host machine is (at the time of writing) split into two parts—a daemon 
+with a RESTful API and a client that talks to the daemon. Figure 2.1 shows your host machine 
+running the Docker client and daemon.
+RESTful A RESTful API is one that uses standard HTTP request types such as GET, 
+POST, DELETE, and others to perform functions that usually correspond to those 
+intended by HTTP’s designers.
+You invoke the Docker client to get information from or give instructions to the daemon; the 
+daemon is a server that receives requests and returns responses from the client using the 
+HTTP protocol. In turn, it will make requests to other services to send and receive images, 
+also using the HTTP protocol. The server will accept requests from the command-line client 
+or anyone else authorized to connect. The daemon is also responsible for taking care of your 
+images and containers behind the scenes, whereas the client acts as the intermediary between 
+you and the RESTful API.
+The private Docker registry is a service that stores Docker images. These can be 
+requested from any Docker daemon that has the relevant access. This registry is on an inter-
+nal network and isn’t publicly accessible, so it’s considered private.
+Your host machine will typically sit on a private network. The Docker daemon will call 
+out to the internet to retrieve images, if requested.
+The Docker Hub is a public registry run by Docker, Inc. Other public registries can also 
+exist on the internet, and your Docker daemon can interact with them.
+In the first chapter we said that Docker containers can be shipped to anywhere you can 
+run Docker—this isn’t strictly true. In fact, only if the daemon can be installed on a machine 
+will containers run on the machine. This is most obviously shown by the fact that the Docker 
+client will run on Windows, but the daemon won’t (yet).
+The key point to take from this image is that when you run Docker on your machine, you 
+may be interacting with other processes on your machine, or even services running on your 
+network or the internet.
+Now that you have a picture of how 
+Docker is laid out, we’ll introduce various 
+techniques relating to the different parts of 
+the figure. 
+The Docker daemon
+The Docker daemon (see figure 2.2) is the 
+hub of your interactions with Docker, and as 
+such is the best place to start gaining an 
+understanding of all the relevant pieces. It 
+controls access to Docker on your machine, 
+manages the state of your containers and 
+images, and brokers interactions with the 
+outside world.
+Daemons and servers A daemon is a process that runs in the background 
+rather than under the direct control of the user. A server is a process that takes 
+requests from a client and performs the actions required to fulfil the requests. Dae-
+mons are frequently also servers that accept requests from clients to perform 
+actions for them. The docker command is a client, and the Docker daemon acts as 
+the server doing the processing on your Docker containers and images. 
+Let’s look at a couple of techniques that illustrate that Docker effectively runs as a daemon, 
+and that your interactions with it using the docker command are limited to simple requests to 
+perform actions, much like interactions with a web server. The first technique allows others 
+to connect to your Docker daemon and perform the same actions you might on your host 
+machine, and the second illustrates that Docker containers are managed by the daemon, not 
+your shell session.
+Open your Docker daemon to the world
+Although by default your Docker daemon is accessible only on your host, there can be good 
+reason to allow others to access it. You might have a problem that you want someone to 
+debug remotely, or you may want to allow another part of your DevOps workflow to kick off 
+a process on a host machine.
+Insecure! Although this can be a powerful and useful technique, it’s considered 
+insecure. An open Docker daemon can be exploited by someone who stumbles on it 
+and gets escalated privileges.
+Problem
+You want to open your Docker server up for others to access.
+Solution
+Start the Docker daemon with an open TCP address.
+Discussion
+Figure 2.3 gives an overview of this technique’s workings.
+Before you open up the Docker daemon, you must first shut the running one down. How you 
+do this will vary depending on your operating system. If you’re not sure how to do this, you 
+can first try this command:
+$ sudo service docker stop
+If you get a message that looks like this,
+The service command supports only basic LSB actions (start, stop, restart,
+try-restart, reload, force-reload, status). For other actions, please try
+to use systemctl.
+then you have a systemctl-based startup system. Try this command:
+$ systemctl stop docker
+If this works, you shouldn’t see any output from this command:
+ps -ef | grep -E \qdocker (-d|daemon)\\b\q | grep -v grep
+Once the Docker daemon has been stopped, you can restart it manually and open it up to out-
+side users with the following command:
+docker daemon -H tcp://0.0.0.0:2375
+This command starts docker as a daemon (docker daemon), defines the host server with the -
+H flag, uses the TCP protocol, opens up to all IP addresses (with 0.0.0.0), and opens on the 
+standard Docker server port (2375). If Docker complains about daemon not being a valid sub-
+command, try using the older -d argument instead.
+You can connect from outside with the following command:
+$ docker -H tcp://<your host\qs ip\>:2375
+Note that you’ll also need to do this from inside your local machine because Docker is no 
+longer listening in the default location.
+If you want to make this change permanent on your host, you’ll need to configure your 
+startup system. See appendix B for information on how to do this.
+Use IP restrictions If you open your daemon up, be sure to open up to a spe-
+cific IP range only, and not to 0.0.0.0, which is highly insecure!
+Running containers as daemons
+As you get familiar with Docker (and if you’re anything like us), you’ll start to think of other 
+use cases for Docker, and one of the first of these is to run Docker containers as running ser-
+vices.
+Running Docker containers as services with predictable behaviour through software iso-
+lation is one of the principal use cases for Docker. This technique will allow you to manage 
+services in a way that works for your operation.
+Problem
+You want to run a Docker container in the background as a service.
+Solution
+Use the -d flag to the docker run command, and use related container-management flags to 
+define the service characteristics.
+Discussion
+Docker containers—like most processes—will run by default in the foreground. The most 
+obvious way to run a Docker container in the background is to use the standard & control 
+operator. Although this works, you can run into problems if you log out of your terminal ses-
+sion, necessitating that you use the nohup flag, which creates a file in your local directory 
+with output that you have to manage… You get the idea: it’s far neater to use the Docker dae-
+mon’s functionality for this.
+To do this, you use the -d flag.
+$ docker run -d -i -p 1234:1234 --name daemon ubuntu nc -l 1234
+The -d flag, when used with docker run, runs the container as a daemon. The -i flag gives 
+this container the ability to interact with your Telnet session. With -p you publish the 1234 
+port from the container to the host. The --name flag lets you give the container a name so you 
+can refer to it later. Finally, you run a simple listening echo server on port 1234 with netcat 
+(nc). 
+If you now connect to it and send messages with Telnet, you can see that the container has 
+received the message by using the docker logs command, as shown in the following listing. 
+$ telnet localhost 1234 
+Trying ::1...
+Connected to localhost.
+Escape character is \q^]\q.
+hello daemon           
+^]         
+telnet\> q   
+Connection closed.
+$ docker logs daemon   
+hello daemon
+$ docker rm daemon 
+daemon
+$
+You can see that running a container as a daemon is simple enough, but operationally some 
+questions remain to be answered:
+What happens to the service if it fails?
+What happens to the service when it terminates?
+What happens if the service keeps failing over and over?
+Fortunately Docker provides flags for each of these questions!
+Flags not required Although restart flags are used most often with the dae-
+mon flag (-d), technically it’s not a requirement to run these flags with -d.
+The restart flag
+The docker run --restart flag allows you to apply a set of rules to be followed (a     so-
+called “restart policy”) when the container terminates (see table 2.1).
+The no policy is simple: when the container exits, it is not restarted. This is the default.
+The always policy is also simple, but it’s worth discussing briefly:
+$ docker run -d --restart=always ubuntu echo done
+This command runs the container as a daemon (-d) and always restarts the container on ter-
+mination (--restart=always). It issues a simple echo command that completes quickly, 
+exiting the container.
+If you run the preceding command and then run a docker ps command, you’ll see output 
+similar to this:
+$ docker ps
+CONTAINER ID        IMAGE               COMMAND             CREATED          
+å STATUS          PORTS                               NAMES
+69828b118ec3        ubuntu:14.04        "echo done"         4 seconds ago
+å Restarting  (0) Less than a second ago              sick_brattain
+The docker ps command lists all the running containers and information about them, includ-
+ing the following:
+When the container was created (CREATED). 
+The current status of the container—usually this will be Restarting, as it will only 
+run for a short time (STATUS). 
+The exit code of the container’s previous run (also under STATUS). 0 means the run 
+was successful. 
+The container name. By default Docker names containers by concatenating two ran-
+dom words. Sometimes this produces odd results!
+Note that the STATUS column also informed us that the container exited less than a second 
+ago and is restarting. This is because the echo done command exits immediately, and Docker 
+must continually restart the container.
+It’s important to note that Docker reuses the container ID. It doesn’t change on restart and 
+there will only ever be one entry in the ps table for this Docker invocation.
+Finally, the on-failure policy restarts only when the container returns a non-zero 
+(which normally means failing) exit code from its main process:
+$ docker run -d --restart=on-failure:10 ubuntu /bin/false
+This command runs the container as a daemon (-d) and sets a limit on the number of restart 
+attempts (--restart=on-failure:10), exiting if this is exceeded. It runs a simple com-
+mand (/bin/false) that completes quickly and will definitely fail. 
+If you run the preceding command and wait a minute, and then run docker ps -a, you’ll 
+see output similar to this:
+$ docker ps -a
+CONTAINER ID        IMAGE               COMMAND                CREATED
+å STATUS                      PORTS               NAMES
+b0f40c410fe3        ubuntu:14.04        "/bin/false"           2 minutes ago
+å Exited (1) 25 seconds ago                      loving_rosalind
+Moving Docker to a different partition
+Docker stores all the data relating to your containers and images under a folder. As it can 
+store a potentially large number of different images, this folder can get big fast!
+If your host machine has different partitions (as is common in enterprise Linux worksta-
+tions), you may encounter space limitations more quickly. In these cases, you may want to 
+move the directory from which Docker operates.
+Problem
+You want to move where Docker stores its data.
+Solution
+Stop and start the Docker daemon, specifying the new location with the -g flag.
+Discussion
+First you’ll need to stop your Docker daemon (see appendix B for a discussion of this).
+Imagine you want to run Docker from /home/dockeruser/mydocker. When you run
+docker daemon -g /home/dockeruser/mydocker
+a new set of folders and files will be created in this directory. These folders are internal to 
+Docker, so play with them at your peril (as we’ve discovered!).
+You should be aware that this will appear to wipe the containers and images from your 
+previous Docker daemon. But don’t despair. If you kill the Docker process you just ran and 
+restart your Docker service, your Docker client will be pointed back at its original location 
+and your containers and images will be returned to you.
+If you want to make this move permanent, you’ll need to configure your host system’s 
+startup process accordingly. 
+The Docker client
+The Docker client (see figure 2.4)is the simplest 
+component in the Docker architecture. It’s what 
+you run when you type commands like docker 
+run or docker pull on your machine. Its job is 
+to communicate with the Docker daemon via 
+HTTP requests. 
+In this section you’re going to see how you can 
+snoop on messages between the Docker client and 
+server. You’ll also see a couple of basic tech-
+niques to do with port mapping that represent 
+baby steps towards the orchestration section later 
+in the book and a way of using your browser as a Docker client.
+Use socat to monitor Docker API traffic
+Occasionally the docker command may not work as you expect. Most often, some aspect of 
+the command-line arguments hasn’t been understood, but occasionally there are more serious 
+setup problems, such as the Docker binary being out of date. In order to diagnose the prob-
+lem, it can be useful to view the flow of data to and from the Docker daemon you are commu-
+nicating with.
+Docker is not unstable Don’t panic! The presence of this technique doesn’t 
+indicate that Docker needs to be debugged often, or is in any way unstable! This 
+technique is here as a tool for understanding Docker’s architecture, and also to intro-
+duce you to socat, a powerful tool. If, like us, you use Docker in a lot of different 
+locations, there will be differences in the Docker versions you use. As with any soft-
+ware, different versions will have different features and flags, which can catch you 
+out.
+Problem
+You want to debug a problem with a Docker command.
+Solution
+Use a traffic snooper to inspect the API calls and craft your own.
+Discussion
+In this technique you’ll insert a proxy Unix domain socket between your request and the 
+server’s socket and see what passes through it (as shown in figure 2.5). Note that you’ll need 
+root or sudo privileges to make this work.
+To create this proxy, you’ll use socat.
+socat socat is a powerful command that allows you to relay data between two 
+data channels of almost any type. If you’re familiar with netcat, you can think of it 
+as netcat on steroids.
+$ sudo socat -v UNIX-LISTEN:/tmp/dockerapi.sock \\
+  UNIX-CONNECT:/var/run/docker.sock &
+In this command, -v makes the output readable, with indications of the flow of data. The 
+UNIX-LISTEN part tells socat to listen on a Unix socket, and UNIX-CONNECT tells socat to 
+connect to Docker’s Unix socket. ‘&’ specifies that the command runs in the background. 
+The new route that your requests to the daemon will travel can be seen in figure 2.6. All traf-
+fic traveling in each direction will be seen by socat and logged to your terminal, in addition 
+to any output that the Docker client provides. 
+The output of a simple docker command will now look similar to this:
+$ docker -H unix:///tmp/dockerapi.sock ps -a    
+\> 2015/01/12 04:34:38.790706  length=105 from=0 to=104 
+GET /v1.16/containers/json?all=1 HTTP/1.1\\r
+Host: /tmp/dockerapi.sock\\r
+User-Agent: Docker-Client/1.4.1\\r
+\\r
+< 2015/01/12 04:34:38.792516  length=544 from=0 to=543
+HTTP/1.1 200 OK\\r
+Content-Type: application/json\\r
+Date: Mon, 12 Jan 2015 09:34:38 GMT\\r
+Content-Length: 435\\r
+\\r
+[{"Command":"/bin/bash","Created":1420731043,"Id":
+å "4eec1b50dc6db7901d3b3c5a8d607f2576829fd6902c7f658735c3bc0a09a39c",
+å "Image":"debian:jessie","Names":["/lonely_mclean"],"Ports":[],
+å "Status":"Exited (0) 3 days ago"}         
+,{"Command":"/bin/bash","Created":1420729129,"Id":
+å "029851aeccc887ecf9152de97f524d30659b3fa4b0dcc3c3fe09467cd0164da5",
+å "Image":"debian:jessie","Names":["/suspicious_torvalds"],"Ports":[],
+å "Status":"Exited (130) 3 days ago"}
+]CONTAINER ID        IMAGE               COMMAND             CREATED
+å STATUS                    PORTS               NAMES        
+4eec1b50dc6d        debian:jessie       "/bin/bash"         3 days ago
+å Exited (0) 3 days ago                         lonely_mclean
+029851aeccc8        debian:jessie       "/bin/bash"         3 days ago
+å Exited (130) 3 days ago                       suspicious_torvalds
+BEWARE If you ran socat as root in the previous example, you’ll need to use 
+sudo to run the ‘docker -H’ command. This is because the dockerapi.sock file is 
+owned by root.
+Using socat is a powerful way to debug not only Docker, but any other network services you 
+might come across in the course of your work. 
+Using ports to connect to containers
+Docker containers have been designed from the outset to run services. In the majority of 
+cases, these will be HTTP services of one kind or another. A significant proportion of these 
+will be web services accessible through the browser.
+This leads to a problem. If you have multiple Docker containers running on port 80 in their 
+internal environment, they can’t all be accessible on port 80 on your host machine. The next 
+technique shows how you can manage this common scenario by exposing and mapping a port 
+from your container.
+Problem
+You want to make multiple Docker container services available on a port from your host 
+machine.
+Solution
+Use Docker’s -p flag to map a container’s port to your host machine.
+Discussion
+In this example we’re going to use the tutum-wordpress image. Let’s say you want to run two 
+of these on your host machine to serve different blogs.
+Because a number of people have wanted to do this before, someone has prepared an 
+image that anyone can acquire and start up. To obtain images from external locations, you’ll 
+use the docker pull command. By default, images will be downloaded from the Docker 
+Hub: 
+$ docker pull tutum/wordpress
+To run the first blog, use the following command:
+$ docker run -d -p 10001:80 --name blog1 tutum/wordpress
+This docker run command runs the container as a daemon (-d) with the publish flag (-p). It 
+identifies the host port (10001) to map to the container port (80) and gives the container a 
+name to identify it (--name blog1 tutum/wordpress).
+You’d do the same for the second blog:
+$ docker run -d -p 10002:80 --name blog2 tutum/wordpress
+If you now run this command,
+$ docker ps -a | grep blog
+you’ll see the two blog containers listed, with their port mappings, looking something like 
+this:
+9afb95ad3617 tutum/wordpress:latest "/run.sh"
+å 9 seconds ago Up 9 seconds 
+3306/tcp, 0.0.0.0:10001-\>80/tcp blog1 31ddc8a7a2fd tutum/wordpress:latest 
+å "/run.sh" 17 seconds ago Up 16 seconds 3306/tcp, 0.0.0.0:10002-\>80/tcp blog2
+You’ll now be able to access your containers by navigating to http://localhost:10001 and 
+http://localhost:10002.
+To remove the containers when you’re finished (assuming you don’t want to keep them), 
+run this command:
+$ docker rm -f blog1 blog2
+You should now be able to run multiple identical images and services on your host by manag-
+ing the port allocations yourself, if necessary.
+Remembering the order of arguments for the -p flag It can be easy 
+to forget which port is the host’s and which port is the container’s when using the  -
+p flag. We think of it as being like reading a sentence from left to right. The user 
+connects to the host (-p) and that host port is passed to the container port 
+(host_port:container_port). It’s also the same format as SSH’s port-forwarding 
+commands, if you’re familiar with them. 
+Linking containers for port isolation
+The last technique showed how to open up your containers to the host network by exposing 
+ports. You won’t always want to expose your services to the host machine or the outside 
+world, but you will want to connect containers to one another.
+This next technique shows how you can achieve this by using Docker’s link flag, ensur-
+ing outsiders can’t access your internal services.
+Problem
+You want to allow communication between containers for internal purposes.
+Solution
+Use Docker’s linking functionality to allow the containers to communicate with each other.
+Discussion
+Continuing in our quest to set up WordPress, we’re going to separate the mysql database tier 
+from the wordpress container, and link these to each other without port configuration. Figure 
+2.7 gives an overview of the final state.
+Why is this useful? Why bother with linking if you can already expose ports to 
+the host and use that? Linking allows you to encapsulate and define the relationships 
+between containers without exposing services to the host’s network (and potentially, 
+to the outside world). You might want to do this for security reasons, for example.
+Run your containers like so, in the following order, pausing for about a minute between the first 
+and second commands:
+$ docker run --name wp-mysql \\
+  -e MYSQL_ROOT_PASSWORD=yoursecretpassword -d mysql  
+$ docker run --name wordpress \\
+  --link wp-mysql:mysql -p 10003:80 -d  wordpress    
+First you give the mysql container the name wp-mysql so you can refer to it later B. You 
+also must supply an environment variable so the mysql container can initialize the database 
+(-e MYSQL_ROOT_PASSWORD=yoursecretpassword). You run both containers as daemons 
+(-d) and use the Docker Hub reference for the official mysql image. 
+In the second command C you give the wordpress image the name wordpress, in case you 
+want to refer to it later. You also link the wp-mysql container to the wordpress container (--
+link wp-mysql:mysql). References to a mysql server within the wordpress container will be 
+sent to the container named wp-mysql. You also use a local port mapping (-p 10003:80), as 
+discussed in technique 5, and add the Docker Hub reference for the official wordpress image 
+(wordpress). Be aware that links won’t wait for services in linked containers to start; hence 
+the instruction to pause between commands. A more precise way of doing this is to look for 
+mysqid: ready for connections in the output of docker logs wp-mysql before running the 
+wordpress container.
+If you now navigate to http://localhost:10003, you’ll see the introductory wordpress 
+screen and you can set up your wordpress instance.
+The meat of this example is the --link flag in the second command. This flag sets up the 
+container’s host file so that the wordpress container can refer to a mysql server, and this will 
+be routed to whatever container has the name “wp-mysql.” This has the significant benefit 
+that different mysql containers can be swapped in without requiring any change at all to the 
+wordpress container, making configuration management of these different services much eas-
+ier.
+Startup order matters The containers must be started up in the correct order so 
+that the mapping can take place on container names that are already in existence. Dynamic 
+resolution of links is not (at the time of writing) a feature of Docker.
+In order for containers to be linked in this way, their ports must be specified as exposed when 
+building the images. This is achieved using the EXPOSE command within the image build’s 
+Dockerfile.
+You have now seen a simple example of Docker orchestration, and you’ve taken a step 
+toward a microservices architecture. In this case, you could perform work on the mysql con-
+tainer while leaving the wordpress container untouched, or vice versa. This fine-grained con-
+trol over running services is one of the key operational benefits of a microservices 
+architecture. 
+Using Docker in your browser
+It can be difficult to sell new technologies, so simple and effective demonstrations are invalu-
+able. Making the demo hands-on is even better, which is why we’ve found that creating a web 
+page with the ability to interact with a container in your browser is a great technique for giv-
+ing newcomers their first taste of Docker in an easily accessible way. The significant “wow 
+factor” doesn’t hurt either!
+Problem
+You want to be able to demonstrate the power of Docker without requiring users to install it 
+themselves or run commands they don’t understand.
+Solution
+Start the Docker daemon with an open port and CORS enabled. Then serve the docker-termi-
+nal repository in your web server of choice.
+Discussion
+The most common use of a REST API is to expose it on a server and use JavaScript on a web 
+page to make calls to it. Because Docker happens to perform all interaction via a REST API, 
+you should be able to control Docker in the same way. Although it may initially seem surpris-
+ing, this control extends all the way to being able to interact with a container via a terminal in 
+your browser.
+We’ve already discussed how to start the daemon on port 2375 in technique 1, so we 
+won’t go into any detail on that. Additionally, CORS is too much to go into here if you’re 
+unfamiliar with it (you might want to refer to CORS in Action by Monsur Hossain [Manning 
+Publications, 2014])—the short of it is that it’s a mechanism that carefully bypasses the usual 
+restriction of JavaScript that limits you to only accessing the current domain. In this case, it 
+allows the daemon to listen on a different port from where you serve your Docker Terminal 
+page. To enable it, you need to start the Docker daemon with the option --api-enable-
+cors alongside the option to make it listen on a port. 
+Now that the prerequisites are sorted, let’s get this running. First, you need to get the 
+code:
+git clone https://github.com/aidanhs/Docker-Terminal.git
+cd Docker-Terminal
+Then you need to serve the files:
+python2 -m SimpleHTTPServer 8000
+The preceding command uses a module built into Python to serve static files from a directory. 
+Feel free to use any equivalent you prefer.
+Now you can visit http://localhost:8000 in your browser and start a container.
+Figure 2.8 shows how the Docker terminal connects up. The page is hosted on your local 
+computer and connects to the Docker daemon on your local computer to perform any opera-
+tions.
+It’s worth being aware of the following points if you want to give this link to other people:
+The other person must not be using a proxy of any kind. This is the most common 
+source of errors we’ve seen—Docker terminal uses Websockets, which don’t cur-
+rently work through proxies.
+Giving a link to localhost obviously won’t work—you’ll need to give out the exter-
+nal IP address.
+Docker Terminal needs to know where to find the Docker API—it should do this auto-
+matically based on the address you’re visiting in the browser, but it’s something to be 
+aware of.
+Why not use Docker for this? If you’re more experienced with Docker, you 
+might wonder why we haven’t used Docker in this technique. The reason is that 
+we’re still introducing Docker and didn’t want to add to the complexity for readers 
+new to Docker. Dockerizing this technique is left as an exercise for the reader. 
+Docker registries
+Once you’ve created your images, you may want to share them with other users. This is 
+where the concept of the Docker registry comes in.
+The three registries in figure 2.9 differ in their accessibility. One is on a private network, one 
+is open on a public network, and another is public but accessible only to those registered with 
+Docker. They all perform the same function with the same API, and this is how the Docker dae-
+mon knows how to communicate with them interchangeably.
+A Docker registry allows multiple users to push and pull images from a central store 
+using a RESTful API.
+The registry code is, like Docker itself, open source. Many companies (such as ours) set 
+up private registries to store and share their proprietary images internally. This is what we’ll 
+discuss here before looking more closely at Docker Inc.’s registry.
+Setting up a local Docker registry
+You’ve seen that Docker, Inc. has a service where people can share their images publicly 
+(and you can pay if you want to do it privately). But there are a number of reasons you may 
+want to share images without going via the Hub—some businesses like to keep as much in-
+house as possible, or maybe your images are large and transferring them over the internet will 
+be too slow, or perhaps you want to keep your images private while you experiment and don’t 
+want to commit to paying. Whatever the reason, there is happily a simple solution.
+Problem
+You want a way to host your images locally.
+Solution
+Set up a registry server on your local network.
+Discussion
+To get the registry running, issue the following command on a machine with plenty of disk 
+space:
+$ docker run -d -p 5000:5000 -v $HOME/registry:/var/lib/registry registry:2
+This command makes the registry available on port 5000 of the Docker host           (-p 
+5000:5000) and uses the registry folder in your home directory at /var/lib/registry in the 
+container, which is where the registry in the container will store files by default. It also 
+specifies that the registry in the container will store files at            /registry 
+(STORAGE_PATH=/registry).
+On all of the machines that you want to access this registry, add the following to your dae-
+mon options (where HOSTNAME is the hostname or IP address of your new registry server): --
+insecure-registry HOSTNAME.
+You can now docker push HOSTNAME:5000/image:tag.
+As you can see, the most basic level of configuration for a local registry, with all data stored 
+in the $HOME/registry directory, is simple. If you wanted to scale up or make it more robust, the 
+repository on Github (https://github.com/docker/distribution/blob/v2.2.1/docs/storagedriv-
+ers.md) outlines some options, like storing data in Amazon S3.
+You may be wondering about the --insecure-registry option. In order to help users 
+remain secure, Docker will only allow you to pull from registries with a signed HTTPS certif-
+icate. We’ve overridden this because we’re fairly comfortable trusting our local network. It 
+goes without saying, though, that you should be much more cautious about doing this over 
+the internet!
+Registry roadmap As with a lot of things in the Docker ecosystem, the regis-
+try is undergoing some changes. Although the registry image will remain avail-
+able and stable, it will eventually be replaced with a new tool called distribution 
+(see https://github.com/docker/distribution). 
+The Docker Hub
+The Docker Hub (see figure 2.10) is a registry maintained by Docker, Inc. It has tens of thou-
+sands of images on it ready to download and run. Any Docker user can set up a free account 
+and public Docker images there. In addition to user-supplied images, there are official images 
+maintained for reference purposes.
+Your images are protected by user authentication, and there’s a starring system for popu-
+larity, similar to Github’s.
+These official images can be representations of Linux distributions like Ubuntu or Cen-
+tOS, or preinstalled software packages like Node.js, or whole software stacks like WordPress.
+Finding and running a Docker image
+Docker registries enable a social coding culture similar to GitHub. If you’re interested in trying 
+out a new software application, or looking for a new one that serves a particular purpose, then 
+Docker images can be an easy way to experiment without interfering with your host machine, 
+provisioning a VM, or having to worry about installation steps.
+Problem
+You want to find an application or tool as a Docker image and try it out.
+Solution
+Use the docker search command to find the image to pull, and then run it.
+Discussion
+Let’s say you’re interested in playing with Node.js. In the following code we searched for 
+images matching “node” with the docker search command:
+$ docker search node
+NAME                            DESCRIPTION                                     
+å STARS     OFFICIAL   AUTOMATED
+node                            Node.js is a JavaScript-based platform for...
+å 432       [OK]                    
+dockerfile/nodejs               Trusted automated Node.js (http://nodejs.o...
+å 57                   [OK]           
+dockerfile/nodejs-bower-grunt   Trusted automated Node.js (http://nodejs.o...
+å 17                   [OK]            
+nodesource/node
+å 9                    [OK]    
+selenium/node-firefox
+å 5                    [OK]
+selenium/node-chrome
+å 5                    [OK]
+selenium/node-base
+å 3                    [OK]
+strongloop/node                 StrongLoop, Node.js, and tools.
+å 3                    [OK]
+selenium/node-chrome-debug
+å 3                    [OK]
+dockerfile/nodejs-runtime       Trusted automated Node.js runtime Build  ..
+å 3                    [OK]
+jprjr/stackbrew-node            A stackbrew/ubuntu-based image for Docker,...
+å 2                    [OK]
+selenium/node-firefox-debug
+å 2                    [OK]
+maccam912/tahoe-node            Follow "The Easy Way" in the description t...
+å 1                    [OK]
+homme/node-mapserv              The latest checkouts of Mapserver and its ...
+å 1                    [OK]
+maxexcloo/nodejs                Docker framework container with Node.js an...
+å 1                    [OK]
+brownman/node-0.10
+å 0                    [OK]
+kivra/node                      Image with build dependencies for frontend... 
+å 0                    [OK]
+thenativeweb/node
+å 0                    [OK]
+thomaswelton/node
+å 0                    [OK]
+siomiz/node-opencv              _/node + node-opencv
+å 0                    [OK]
+bradegler/node
+å 0                    [OK]
+tcnksm/centos-node              Dockerfile for CentOS packaging node
+å 0                    [OK]
+azukiapp/node
+å 0                    [OK]
+onesysadmin/node-imagetools
+å 0                    [OK]
+fishead/node
+å 0                    [OK]
+Once you’ve chosen an image, you can download it by performing a docker pull command 
+on the name:
+$ docker pull node                         
+node:latest: The image you are pulling has been verified
+81c86d8c1e0c: Downloading
+81c86d8c1e0c: Pull complete
+3a20d8faf171: Pull complete
+c7a7a01d634e: Pull complete
+2a13c2a76de1: Pull complete
+4cc808131c54: Pull complete
+bf2afba3f5e4: Pull complete
+0cba665db8d0: Pull complete
+322af6f234b2: Pull complete
+9787c55efe92: Pull complete
+511136ea3c5a: Already exists
+bce696e097dc: Already exists
+58052b122b60: Already exists
+Status: Downloaded newer image for node:latest   
+Then you can run it interactively using the -t and -i flags. The -t flag creates a tty device 
+(a terminal) for you, and the -i flag specifies that this Docker session is interactive:
+$ docker run -t -i node /bin/bash
+root@c267ae999646:/# node
+\> process.version
+\qv0.12.0\q
+\>
+The -ti flag idiom You can save keystrokes by replacing -t -i with -ti in the 
+preceding call to docker run. You’ll see this throughout the book from here on.
+Often there will be specific advice from the image maintainers about how the image should 
+be run. Searching for the image on the http://hub.docker.com website will take you to the 
+page for the image. The Description tab may give you more information.
+Do you trust the image? If you download an image and run it, you are run-
+ning code that you may not be able to fully verify. Although there is relative safety 
+in using trusted images, nothing can guarantee 100% security when downloading 
+and running software over the internet.
+Armed with this knowledge and experience, you can now tap the enormous resources avail-
+able on the Docker Hub. With literally tens of thousands of images to try out, there is much to 
+learn. Enjoy!
+Summary
+In this chapter you’ve learned how Docker hangs together, and you’ve used this understand-
+ing to manipulate the various components.
+These were the principal areas covered:
+Opening up your Docker daemon to outsiders over TCP or a web browser
+Running containers as service daemons
+Linking containers together via the Docker daemon
+Snooping the Docker daemon API
+Setting up your own registry
+Using the Docker Hub to find and download images
+These first two chapters have covered the basics (though hopefully you’ve learned something 
+new, even if you’re familiar with Docker). We’ll now move on to part 2, where we’ll look at 
+the role of Docker in the world of software development.
+
+=======================
+
+Connect to the container’s 
+netcat server with the 
+telnet command.
+
+=======================
+
+	
+
+=======================
+
+<$paranum\>	<$paratext\> <$pagenum\>
+
+=======================
+
+<$paranum\>	<$paratext\> <$pagenum\>
+
+=======================
+
+openObjectId <$relfilename\>:<$ObjectType\> <$ObjectId\>
+<$paratext\> <$pagenum\>
+<$paratext\> <$pagenum\>
+	<$paratext\> <$pagenum\>
+		<$paratext\> <$pagenum\>
+<$paratext\> <$pagenum\>
+
+=======================
+
+ 1, 2–3
+<$symbols\><$numerics\><$alphabetics\>
+Level3IX
+Level2IX
+Level1IX
+Symbols[\\ ];Numerics[0];A;B;C;D;E;F;G;H;I;J;K;L;M;N;O;P;Q;R;S;T;U;V;W;X;Y;Z
+<$autorange\><Default Para Font\><$pagenum\>
+
+=======================
+
+Overview of Docker architecture
+
+=======================
+
+The Docker daemon
+
+=======================
+
+Docker accessibility: normal and opened up
+
+=======================
+
+C
+
+=======================
+
+Input a line of 
+text to send to the 
+netcat server.
+
+=======================
+
+Type q and then 
+the Return key to 
+quit the Telnet 
+program.
+
+=======================
+
+Press Ctrl-] followed by 
+the Return key to quit the 
+Telnet session.
+
+=======================
+
+Clean up the container 
+with the rm command. 
+
+=======================
+
+Run the docker logs 
+command to see the 
+container’s output.
+
+=======================
+
+The Docker client
+
+=======================
+
+Docker’s client-server architecture on your host
+
+=======================
+
+Docker client and server with socat inserted as a proxy
+
+=======================
+
+The command you issue to 
+see the request and response
+
+=======================
+
+The HTTP request begins 
+here, with the right angle 
+bracket on the left.
+
+=======================
+
+The HTTP response 
+begins here, with the left 
+angle bracket on the left.
+
+=======================
+
+The JSON content of the 
+response from the Docker server
+
+=======================
+
+The output as normally seen by the 
+user, interpreted by the Docker 
+client from the preceding JSON 
+
+=======================
+
+WordPress setup with linked containers
+
+=======================
+
+B
+
+=======================
+
+How the Docker terminal works
+
+=======================
+
+A Docker registry
+
+=======================
+
+The Docker Hub
+
+=======================
+
+The output of docker search is 
+ordered by the number of stars.
+
+=======================
+
+The description is the uploader’s 
+explanation of the purpose of the image.
+
+=======================
+
+Automated images are those built using 
+Docker Hub’s automated build feature.
+
+=======================
+
+Official images are those 
+trusted by the Docker Hub.
+
+=======================
+
+Pull the image named 
+node from the Docker 
+Hub.
+
+=======================
+
+This message is seen if 
+Docker has pulled a new 
+image (as opposed to 
+identifying that there’s no 
+newer image than the one 
+you already have). Your 
+output may be different.
+
+=======================
+
